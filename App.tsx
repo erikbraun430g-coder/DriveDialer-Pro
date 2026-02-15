@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Contact, AppSection } from './types';
 import VoiceController from './components/VoiceController';
@@ -16,10 +17,8 @@ const App: React.FC = () => {
       setContacts(JSON.parse(savedContacts));
     } else {
       const defaultContacts: Contact[] = [
-        // Fix: Added missing 'organization' property to satisfy the Contact interface (line 20)
-        { id: '1', name: 'Sophie de Boer', organization: 'De Boer Advies', subject: 'Afspraak bevestigen', phone: '+31612345678', status: 'pending' },
-        // Fix: Added missing 'organization' property to satisfy the Contact interface (line 21)
-        { id: '2', name: 'Jan Jansen', organization: 'Solar Pro', subject: 'Offerte zonnepanelen', phone: '+31687654321', status: 'pending' }
+        { id: '1', name: 'Sophie de Boer', relation: 'De Boer Advies', subject: 'Afspraak bevestigen', phone: '+31612345678', status: 'pending' },
+        { id: '2', name: 'Jan Jansen', relation: 'Solar Pro', subject: 'Offerte zonnepanelen', phone: '+31687654321', status: 'pending' }
       ];
       setContacts(defaultContacts);
     }

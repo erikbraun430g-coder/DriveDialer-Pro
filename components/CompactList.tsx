@@ -24,8 +24,11 @@ const CompactList: React.FC<CompactListProps> = ({ contacts, currentIndex }) => 
             </div>
             <div>
               <p className="font-bold text-sm text-white">{contact.name}</p>
-              <p className="text-[10px] text-blue-500/60 uppercase font-black tracking-wider leading-none mt-1">{contact.organization}</p>
-              <p className="text-[10px] text-white/30 uppercase tracking-widest mt-1">{contact.subject}</p>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[8px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded font-black uppercase tracking-tighter">Relatie</span>
+                <p className="text-[10px] text-blue-500/60 uppercase font-black tracking-wider leading-none">{contact.relation}</p>
+              </div>
+              <p className="text-[10px] text-white/30 uppercase tracking-widest mt-1.5">{contact.subject}</p>
             </div>
           </div>
           <p className="text-[10px] font-mono text-blue-500/50">{contact.phone}</p>
