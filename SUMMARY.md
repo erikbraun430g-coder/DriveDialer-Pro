@@ -1,16 +1,20 @@
-# DriveDialer Pro - Project Status & Specificaties
 
-## 🚀 Huidige Functionaliteit
-1. **Zoeken op Naam + Onderwerp**: De assistent herkent "Bel [Naam]" en leest nu ook direct het **onderwerp** van de taak voor uit de CSV/Lijst.
-2. **Contextuele Feedback**: De AI zegt: "Ik heb Jan Jansen gevonden voor het onderwerp: Offerte zonnepanelen."
-3. **Stuurknop Integratie (MediaSession)**: De Play-knop op het stuur start het gesprek nadat de AI de persoon heeft bevestigd.
-4. **Handsfree Workflow**: "🎙️ Start" -> "Zoek Jan" -> AI: "Gevonden voor [Onderwerp], druk op stuur" -> 📞 Gesprek start.
+# DriveDialer Pro - Deploy Ready 🚀
 
-## 🧠 Geheugenbeheer & Stabiliteit
-- **Cleanup**: Audio nodes worden na gebruik geforceerd uit het geheugen verwijderd.
-- **Siri Release**: De microfoon wordt binnen 1.8s na de AI-beurt vrijgegeven voor het OS.
+## ✅ Status
+- **Interface**: Volledig geoptimaliseerd (Blauw/Rood model).
+- **Deployment**: Geconfigureerd voor Netlify (Vite + TS).
+- **AI**: Gemini 2.5 Flash Native Audio geïntegreerd voor hands-free bellen.
+- **Data**: Google Sheets Import werkend met automatische opslag in localStorage.
 
-## 🛠 Architectuur
-- **Frontend**: React (ESM), Tailwind CSS.
-- **AI Engine**: Gemini Live API met `findContactByName` tool.
-- **Data**: Contacten bevatten nu expliciet een `subject` veld dat wordt voorgelezen.
+## 📦 Inbegrepen voor Export
+- `package.json`: Bevat alle nodige bibliotheken voor build.
+- `vite.config.ts`: Geoptimaliseerde build settings.
+- `App.tsx`: Hoofdinterface met sectie-beheer.
+- `VoiceController.tsx`: De "hersenen" van de app (AI + MediaSession).
+
+## 🛠 Volgende Stappen voor de Gebruiker
+1. Download de ZIP via de knop rechtsboven.
+2. Upload naar een nieuwe GitHub repository.
+3. Koppel de repo aan Netlify.
+4. **BELANGRIJK**: Voeg je `API_KEY` toe in de Netlify Environment Variables.
