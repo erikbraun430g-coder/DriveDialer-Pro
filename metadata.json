@@ -1,6 +1,7 @@
-
 {
   "requestFramePermissions": [
     "microphone"
-  ]
+  ],
+  "name": "DriveDialer Pro",
+  "description": ""
 }

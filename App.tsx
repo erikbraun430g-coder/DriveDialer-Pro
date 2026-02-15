@@ -38,22 +38,24 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white font-sans selection:bg-blue-500/30 overflow-hidden">
-      <div className="max-w-4xl mx-auto h-screen flex flex-col px-4 py-4 sm:py-6 overflow-hidden">
+    <div className="h-[100svh] bg-black text-white font-sans selection:bg-blue-500/30 overflow-hidden flex flex-col">
+      <div className="max-w-4xl mx-auto w-full h-full flex flex-col px-4 pt-4 pb-4">
         
         <CompactDashboard 
           onSettingsClick={() => setCurrentSection(s => s === AppSection.SETTINGS ? AppSection.DIALER : AppSection.SETTINGS)} 
           isSettingsOpen={currentSection === AppSection.SETTINGS}
         />
 
-        <div className="flex-1 overflow-y-auto mt-4 sm:mt-8 space-y-6 scrollbar-hide">
+        <div className="flex-1 overflow-hidden mt-6">
           {currentSection === AppSection.SETTINGS ? (
-            <ImportScreen 
-              onDataLoaded={handleDataUpdate} 
-              onBack={() => setCurrentSection(AppSection.DIALER)} 
-            />
+            <div className="h-full overflow-y-auto scrollbar-hide">
+              <ImportScreen 
+                onDataLoaded={handleDataUpdate} 
+                onBack={() => setCurrentSection(AppSection.DIALER)} 
+              />
+            </div>
           ) : (
-            <div className="space-y-6 sm:space-y-10">
+            <div className="flex flex-col h-full gap-6">
               <VoiceController 
                 contacts={contacts} 
                 currentIndex={currentIndex}
@@ -61,14 +63,16 @@ const App: React.FC = () => {
                 onCallComplete={markAsCalled}
               />
 
-              <div className="pt-4 border-t border-white/5 pb-10">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-[9px] font-black uppercase tracking-[0.5em] text-white/30">Wachtrij</h3>
-                  <span className="text-[8px] font-bold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest border border-blue-500/20">
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="flex justify-between items-center mb-4 border-b border-white/10 pb-2">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.5em] text-white/30">Wachtrij</h3>
+                  <span className="text-[10px] font-bold text-blue-500">
                     {Math.max(0, contacts.length - (currentIndex + 1))} Resterend
                   </span>
                 </div>
-                <CompactList contacts={contacts} currentIndex={currentIndex} />
+                <div className="flex-1 overflow-y-auto scrollbar-hide">
+                  <CompactList contacts={contacts} currentIndex={currentIndex} />
+                </div>
               </div>
             </div>
           )}
