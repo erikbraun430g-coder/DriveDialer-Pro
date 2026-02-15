@@ -10,6 +10,7 @@ interface VoiceControllerProps {
   onCallComplete: (id: string) => void;
 }
 
+// Hulpmiddelen voor audio-encodering
 function encode(bytes: Uint8Array) {
   let binary = '';
   const len = bytes.byteLength;
@@ -117,12 +118,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     try {
       setIsProcessing(true);
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { 
-          echoCancellation: true, 
-          noiseSuppression: true, 
-          autoGainControl: true,
-          channelCount: 1
-        } 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
       });
       streamRef.current = stream;
 
@@ -132,8 +128,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       inputAudioCtxRef.current = inputCtx;
       outputAudioCtxRef.current = outputCtx;
 
-      await inputCtx.resume();
-      await outputCtx.resume();
+      // Cruciaal: Eerst de contexts hervatten voordat de sessie start
+      await Promise.all([inputCtx.resume(), outputCtx.resume()]);
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const contactData = contacts.map((c, i) => 
@@ -166,7 +162,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
             processor.onaudioprocess = (e) => {
               sessionPromise.then(s => {
-                if (!streamRef.current) return;
+                if (!streamRef.current || !s) return;
                 const inputData = e.inputBuffer.getChannelData(0);
                 const int16 = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
@@ -176,20 +172,20 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             source.connect(processor);
             processor.connect(inputCtx.destination);
           },
-          onmessage: async (msg: LiveServerMessage) => {
-            // Transcripties verwerken met fallback naar lege string voor TypeScript veiligheid
-            if (msg.serverContent?.inputTranscription) {
-              setTranscript(msg.serverContent.inputTranscription.text ?? '');
+          onmessage: async (message: LiveServerMessage) => {
+            // TypeScript Fix: Alleen strings doorgeven aan setters
+            if (message.serverContent?.inputTranscription?.text) {
+              setTranscript(message.serverContent.inputTranscription.text);
             }
-            if (msg.serverContent?.outputTranscription) {
-              setAiTranscript(msg.serverContent.outputTranscription.text ?? '');
+            if (message.serverContent?.outputTranscription?.text) {
+              setAiTranscript(message.serverContent.outputTranscription.text);
             }
-            if (msg.serverContent?.turnComplete) {
+            if (message.serverContent?.turnComplete) {
               setTimeout(() => { setTranscript(''); setAiTranscript(''); }, 2000);
             }
 
             // Audio afspelen
-            const parts = msg.serverContent?.modelTurn?.parts;
+            const parts = message.serverContent?.modelTurn?.parts;
             if (parts && outputAudioCtxRef.current) {
               for (const part of parts) {
                 if (part.inlineData?.data) {
@@ -206,24 +202,31 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             }
 
             // Functies uitvoeren
-            if (msg.toolCall?.functionCalls) {
-              for (const fc of msg.toolCall.functionCalls) {
+            if (message.toolCall?.functionCalls) {
+              for (const fc of message.toolCall.functionCalls) {
                 let res = "";
                 if (fc.name === 'makeCall') res = makeCall();
                 if (fc.name === 'findContactByName') res = findContactByName((fc.args as any)?.name || "");
-                sessionPromise.then(s => s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: res } } }));
+                sessionPromise.then(s => {
+                    if (s) s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: res } } });
+                });
               }
             }
 
-            // Interrupties afhandelen (als gebruiker praat terwijl AI praat)
-            if (msg.serverContent?.interrupted) {
+            if (message.serverContent?.interrupted) {
                sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
                sourcesRef.current.clear();
                nextStartTimeRef.current = 0;
             }
           },
-          onerror: (e) => { console.error("AI Session Error:", e); stopVoiceSession(); },
-          onclose: () => stopVoiceSession()
+          onerror: (e) => { 
+            console.error("AI Session Error:", e);
+            stopVoiceSession(); 
+          },
+          onclose: (e) => {
+            console.log("AI Session Closed:", e);
+            stopVoiceSession();
+          }
         },
         config: {
           responseModalities: [Modality.AUDIO],
@@ -234,30 +237,25 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             { name: 'makeCall', description: 'Start het bellen.', parameters: { type: Type.OBJECT, properties: {} } },
             { name: 'findContactByName', description: 'Zoek contact in de lijst.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
           ]}] as any,
-          systemInstruction: `Je bent DriveDialer, een assistent voor chauffeurs. 
-          
+          systemInstruction: `Je bent DriveDialer. 
           BESCHIKBARE CONTACTEN:
           ${contactData}
-          
           STRIKTE REGELS:
-          1. Zodra je verbinding maakt, zeg je ONMIDDELLIJK: "Systeem online, waarmee kan ik je helpen?"
-          2. Noem bij vragen ALTIJD Naam en Bedrijf (Relatie). 
-          3. Gebruik 'makeCall' om te bellen. 
-          4. Gebruik 'findContactByName' om een ander contact te selecteren.
-          5. Wees extreem kort (max 12 woorden).
-          6. Spreek Nederlands.`
+          1. Zodra verbonden, zeg je direct: "Systeem online."
+          2. Noem bij vragen ALTIJD Naam en Bedrijf.
+          3. Gebruik 'makeCall' om te bellen.
+          4. Wees extreem kort (max 12 woorden). Nederlands.`
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (e: any) { 
-      console.error("Mic/Setup Error:", e);
-      setIsActive(false); 
-      setIsProcessing(false);
+      console.error("Setup Error:", e);
+      stopVoiceSession();
     }
   };
 
   return (
-    <div className="w-full flex flex-col items-center space-y-8">
+    <div className="w-full flex flex-col items-center space-y-12 py-4">
       <div className="relative">
         {/* Pulsing visualizer background */}
         {isActive && (
@@ -270,8 +268,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         <button 
           onClick={startVoiceSession} 
           disabled={isProcessing}
-          className={`relative w-52 h-52 rounded-full flex flex-col items-center justify-center transition-all active:scale-90 border-[12px] ${
-            isActive ? 'bg-blue-600 border-white shadow-[0_0_50px_rgba(37,99,235,0.4)]' : 'bg-slate-900 border-slate-800'
+          className={`relative w-56 h-56 rounded-full flex flex-col items-center justify-center transition-all active:scale-90 border-[14px] ${
+            isActive ? 'bg-blue-600 border-white shadow-[0_0_60px_rgba(37,99,235,0.5)]' : 'bg-slate-900 border-slate-800'
           } ${isProcessing ? 'animate-pulse opacity-50' : ''}`}
         >
           <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-2 ${isActive ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
@@ -285,8 +283,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               <svg className="w-10 h-10" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
             )}
           </div>
-          <span className="text-white font-black text-xl uppercase tracking-widest">
-            {isProcessing ? 'Laden...' : isActive ? 'STOP' : 'START'}
+          <span className="text-white font-black text-xl uppercase tracking-widest leading-none">
+            {isProcessing ? 'Wacht...' : isActive ? 'STOP' : 'START'}
           </span>
         </button>
       </div>
@@ -301,7 +299,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               </p>
             )}
             {aiTranscript && (
-              <p className="text-xl text-blue-400 font-black uppercase tracking-tighter leading-none animate-in fade-in slide-in-from-bottom-2">
+              <p className="text-xl text-blue-400 font-black uppercase tracking-tighter leading-none">
                 {aiTranscript}
               </p>
             )}
@@ -309,11 +307,11 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         )}
       </div>
 
-      {/* Minimaal contact display - Enkel de naam */}
+      {/* Alleen de naam van het geselecteerde contact */}
       {currentContact && (
-        <div className="text-center pt-2">
-          <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.5em] mb-4 opacity-50">Geselecteerd</p>
-          <h2 className="text-6xl font-black text-white uppercase tracking-tighter leading-none">
+        <div className="text-center pt-4">
+          <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.6em] mb-4 opacity-50">Geselecteerd</p>
+          <h2 className="text-7xl font-black text-white uppercase tracking-tighter leading-none break-words max-w-[90vw]">
             {currentContact.name}
           </h2>
         </div>
