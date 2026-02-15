@@ -75,8 +75,14 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
     sourcesRef.current.clear();
     
-    if (inputAudioCtxRef.current) inputAudioCtxRef.current.close();
-    if (outputAudioCtxRef.current) outputAudioCtxRef.current.close();
+    if (inputAudioCtxRef.current) {
+        inputAudioCtxRef.current.close().catch(() => {});
+        inputAudioCtxRef.current = null;
+    }
+    if (outputAudioCtxRef.current) {
+        outputAudioCtxRef.current.close().catch(() => {});
+        outputAudioCtxRef.current = null;
+    }
     
     setIsActive(false);
     setIsProcessing(false);
@@ -171,12 +177,12 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             processor.connect(inputCtx.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
-            // Transcripties verwerken voor visuele feedback
+            // Transcripties verwerken met fallback naar lege string voor TypeScript veiligheid
             if (msg.serverContent?.inputTranscription) {
-              setTranscript(msg.serverContent.inputTranscription.text);
+              setTranscript(msg.serverContent.inputTranscription.text ?? '');
             }
             if (msg.serverContent?.outputTranscription) {
-              setAiTranscript(msg.serverContent.outputTranscription.text);
+              setAiTranscript(msg.serverContent.outputTranscription.text ?? '');
             }
             if (msg.serverContent?.turnComplete) {
               setTimeout(() => { setTranscript(''); setAiTranscript(''); }, 2000);
@@ -216,7 +222,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
                nextStartTimeRef.current = 0;
             }
           },
-          onerror: (e) => { console.error(e); stopVoiceSession(); },
+          onerror: (e) => { console.error("AI Session Error:", e); stopVoiceSession(); },
           onclose: () => stopVoiceSession()
         },
         config: {
@@ -244,14 +250,14 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       });
       sessionRef.current = await sessionPromise;
     } catch (e: any) { 
-      console.error(e);
+      console.error("Mic/Setup Error:", e);
       setIsActive(false); 
       setIsProcessing(false);
     }
   };
 
   return (
-    <div className="w-full flex flex-col items-center space-y-6">
+    <div className="w-full flex flex-col items-center space-y-8">
       <div className="relative">
         {/* Pulsing visualizer background */}
         {isActive && (
@@ -270,7 +276,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         >
           <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-2 ${isActive ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
             {isActive ? (
-               <div className="flex items-end gap-1.5 h-6">
+               <div className="flex items-end gap-1.5 h-6 text-blue-600">
                  <div className="w-1.5 bg-current rounded-full transition-all duration-75" style={{ height: `${20 + (volume * 0.8)}%` }}></div>
                  <div className="w-1.5 bg-current rounded-full transition-all duration-75" style={{ height: `${40 + (volume * 0.4)}%` }}></div>
                  <div className="w-1.5 bg-current rounded-full transition-all duration-75" style={{ height: `${10 + (volume * 1.2)}%` }}></div>
@@ -285,7 +291,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         </button>
       </div>
 
-      {/* Transcriptie feedback - Cruciaal voor debuggen */}
+      {/* Transcriptie feedback */}
       <div className="h-16 flex flex-col items-center justify-center px-8 w-full">
         {isActive && (
           <div className="text-center space-y-2">
@@ -303,16 +309,13 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         )}
       </div>
 
-      {/* Extreem simpel contact display */}
+      {/* Minimaal contact display - Enkel de naam */}
       {currentContact && (
         <div className="text-center pt-2">
-          <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.5em] mb-3 opacity-50">Geselecteerd</p>
-          <h2 className="text-6xl font-black text-white uppercase tracking-tighter leading-none mb-1">
+          <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.5em] mb-4 opacity-50">Geselecteerd</p>
+          <h2 className="text-6xl font-black text-white uppercase tracking-tighter leading-none">
             {currentContact.name}
           </h2>
-          <p className="text-xl font-bold text-white/30 uppercase tracking-[0.2em]">
-            {currentContact.relation}
-          </p>
         </div>
       )}
     </div>
