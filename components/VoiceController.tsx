@@ -41,7 +41,6 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   
   const currentContact = contacts[currentIndex];
-  const nextContact = contacts[currentIndex + 1];
 
   const stopVoiceSession = useCallback(() => {
     if (streamRef.current) {
@@ -59,13 +58,13 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   }, []);
 
   const makeCall = useCallback(() => {
-    if (!currentContact) return "Geen contact";
+    if (!currentContact) return "Geen contact om te bellen.";
     stopVoiceSession();
     setIsStaged(false);
     setStatus(`Bellen...`);
     window.open(`tel:${currentContact.phone.replace(/\s+/g, '')}`, '_self');
     onCallComplete(currentContact.id);
-    return "ok";
+    return "Oproep gestart.";
   }, [currentContact, onCallComplete, stopVoiceSession]);
 
   const findContactByName = useCallback((name: string) => {
@@ -73,9 +72,9 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     if (foundIdx !== -1) {
       setCurrentIndex(foundIdx);
       setIsStaged(true);
-      return `Gevonden: ${contacts[foundIdx].name}. Je kunt nu bellen.`;
+      return `Gevonden: ${contacts[foundIdx].name} van ${contacts[foundIdx].organization}. Tik op de rode knop om te bellen.`;
     }
-    return `Niet gevonden in de lijst.`;
+    return `Ik kan ${name} niet vinden in de lijst.`;
   }, [contacts, setCurrentIndex]);
 
   const startVoiceSession = async () => {
@@ -89,7 +88,16 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      setStatus('Verbinden...');
+      setStatus('Assistent start...');
+
+      // Bouw een tekstuele database voor de AI
+      const contactDatabaseString = contacts.map((c, i) => 
+        `TAAK ${i + 1}:
+        - Naam: ${c.name}
+        - Organisatie: ${c.organization || 'Onbekend'}
+        - Onderwerp: ${c.subject}
+        - Telefoonnummer: ${c.phone}`
+      ).join('\n\n');
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
@@ -112,7 +120,6 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
                 for (let i = 0; i < newLength; i++) {
                   resampledData[i] = inputData[Math.round(i * ratio)];
                 }
-
                 const int16 = new Int16Array(resampledData.length);
                 for (let i = 0; i < resampledData.length; i++) int16[i] = resampledData[i] * 32768;
                 const base64 = encode(new Uint8Array(int16.buffer));
@@ -138,7 +145,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               source.start(startTime);
               nextStartTimeRef.current = startTime + buffer.duration;
               sourcesRef.current.add(source);
-              setStatus('Antwoorden...');
+              setStatus('Aan het praten...');
             }
 
             if (msg.toolCall?.functionCalls) {
@@ -152,38 +159,47 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               }
             }
             if (msg.serverContent?.turnComplete) setStatus('Ik luister...');
+          },
+          onerror: (e) => {
+            console.error(e);
+            setStatus('Fout bij verbinden');
+            stopVoiceSession();
           }
         },
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
           tools: [{ functionDeclarations: [
-            { name: 'makeCall', description: 'Start het bellen.', parameters: { type: Type.OBJECT, properties: {} } },
-            { name: 'findContactByName', description: 'Zoek iemand op naam.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
+            { name: 'makeCall', description: 'Start direct het bellen van het momenteel geselecteerde contact.', parameters: { type: Type.OBJECT, properties: {} } },
+            { name: 'findContactByName', description: 'Zoek een specifiek persoon in de lijst op basis van hun naam.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
           ]}] as any,
-          systemInstruction: `Je bent de DriveDialer Assistent. Help de bestuurder hands-free te bellen.
+          systemInstruction: `Je bent de DriveDialer Pro Assistent. Je helpt een bestuurder om hands-free te werken met hun bellijst.
             
-            HUIDIGE TAAK (EERSTE REGEL):
-            - Naam: ${currentContact?.name || 'Leeg'}
-            - Organisatie: ${currentContact?.organization || 'Niet vermeld'}
-            - Onderwerp/Taak: ${currentContact?.subject || 'Geen details'}
-            - Telefoon: ${currentContact?.phone || 'Geen nummer'}
+            BELANGRIJK: Gebruik ENKEL de onderstaande data. Zeg NOOIT dat je geen toegang hebt tot de spreadsheet, want de data staat hieronder voor je klaar.
             
-            VOLGENDE TAAK (TWEEDE REGEL):
-            - Naam: ${nextContact?.name || 'Niemand'}
-            - Organisatie: ${nextContact?.organization || ''}
+            VOLLEDIGE DATABASE VAN CONTACTEN:
+            ${contactDatabaseString}
             
-            GEDRAG:
-            - Als de gebruiker vraagt: "lees de eerste taak voor" of "lees de eerste regel uit de excel voor", lees dan ALLES voor: de naam, het bedrijf, het onderwerp en het telefoonnummer.
-            - Wees kort en zakelijk. Zeg niet: "natuurlijk lees ik dat voor". Zeg gewoon direct: "De eerste regel is..."
-            - Als ze vragen om te bellen, gebruik de 'makeCall' tool.
-            - Spreek Nederlands.`
+            HUIDIGE SELECTIE:
+            De bestuurder staat nu bij TAAK ${currentIndex + 1} (${currentContact?.name || 'geen'}).
+            
+            JOUW OPDRACHT:
+            1. Als de gebruiker vraagt om "de eerste taak", "de eerste regel" of "wat ik moet doen" voor te lezen: 
+               Lees ALTIJD de volgende 4 dingen voor:
+               - De Naam van de persoon
+               - De Organisatie (indien bekend)
+               - Het Onderwerp (wat er moet gebeuren)
+               - Het Telefoonnummer
+            2. Wees extreem bondig. Je bent een assistent in een auto, dus korte zinnen zijn veiliger.
+            3. Spreek uitsluitend Nederlands.
+            4. Als de gebruiker zegt "bel haar" of "bel dit nummer", gebruik dan de 'makeCall' tool.
+            5. Als de gebruiker een naam noemt die niet de huidige is, gebruik 'findContactByName' om die persoon op te zoeken.`
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (e) { 
       console.error(e);
-      setStatus('Fout bij microfoon');
+      setStatus('Microfoon fout');
       setIsActive(false); 
     }
   };
@@ -198,7 +214,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           }`}
         >
           <span className="text-white font-black text-4xl uppercase tracking-widest">{isActive ? 'STOP' : 'START'}</span>
-          <p className="mt-2 text-[10px] font-bold text-blue-200 uppercase tracking-[0.2em] opacity-60">Spraak Assistent</p>
+          <p className="mt-2 text-[10px] font-bold text-blue-200 uppercase tracking-[0.2em] opacity-60">Stem Assistent</p>
         </button>
 
         <button 
@@ -209,7 +225,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         >
           <span className="text-red-400 text-[9px] font-black uppercase tracking-[0.3em] mb-1">Nu Bellen</span>
           <h2 className="font-black text-white text-2xl uppercase tracking-tighter line-clamp-1">
-            {currentContact?.name || 'GEEN'}
+            {currentContact?.name || 'GEEN DATA'}
           </h2>
           <p className="text-[10px] text-white/40 font-bold uppercase mt-1">{currentContact?.organization || ''}</p>
           <div className="mt-2 px-4 py-1 bg-black/30 rounded-full">
