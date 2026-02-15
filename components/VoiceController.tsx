@@ -31,8 +31,7 @@ function decode(base64: string) {
 
 const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentIndex, setCurrentIndex, onCallComplete }) => {
   const [isActive, setIsActive] = useState(false);
-  const [isStaged, setIsStaged] = useState(false); 
-  const [status, setStatus] = useState('Tik op Start');
+  const [status, setStatus] = useState('Systeem Gereed');
   
   const audioCtxRef = useRef<AudioContext | null>(null);
   const sessionRef = useRef<any>(null);
@@ -54,27 +53,26 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
     sourcesRef.current.clear();
     setIsActive(false);
-    setStatus('Gereed');
+    setStatus('Gereed voor start');
   }, []);
 
   const makeCall = useCallback(() => {
-    if (!currentContact) return "Geen contact.";
-    stopVoiceSession();
-    setIsStaged(false);
-    setStatus(`Bellen...`);
-    window.open(`tel:${currentContact.phone.replace(/\s+/g, '')}`, '_self');
+    if (!currentContact) return "Fout: geen contact geselecteerd.";
+    // We stoppen de sessie even om de telefoonlijn vrij te maken
+    const phone = currentContact.phone.replace(/\s+/g, '');
+    setStatus(`Bellen: ${currentContact.name}...`);
+    window.location.href = `tel:${phone}`;
     onCallComplete(currentContact.id);
-    return "Oproep wordt gestart.";
-  }, [currentContact, onCallComplete, stopVoiceSession]);
+    return `Ik start nu het gesprek met ${currentContact.name}.`;
+  }, [currentContact, onCallComplete]);
 
   const findContactByName = useCallback((name: string) => {
     const foundIdx = contacts.findIndex(c => c.name.toLowerCase().includes(name.toLowerCase()));
     if (foundIdx !== -1) {
       setCurrentIndex(foundIdx);
-      setIsStaged(true);
-      return `Gevonden: ${contacts[foundIdx].name} van ${contacts[foundIdx].relation}. Tik op de rode knop om te bellen.`;
+      return `Gevonden: ${contacts[foundIdx].name} van de relatie ${contacts[foundIdx].relation}. Zal ik bellen?`;
     }
-    return `Niet gevonden.`;
+    return `Ik kan ${name} niet vinden in je huidige lijst.`;
   }, [contacts, setCurrentIndex]);
 
   const startVoiceSession = async () => {
@@ -88,15 +86,15 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      setStatus('Assistent start...');
+      setStatus('Assistent verbindt...');
 
-      // DATABASE VOOR DE AI
-      const contactDatabaseString = contacts.map((c, i) => 
-        `TAAK ${i + 1}:
-        - Naam Contactpersoon: ${c.name}
-        - Relatie / Bedrijfsnaam: ${c.relation}
-        - Wat te doen (Taak): ${c.subject}
-        - Telefoonnummer: ${c.phone}`
+      // DATASTRUCTUUR VOOR AI
+      const contactDatabase = contacts.map((c, i) => 
+        `REGEL ${i + 1}:
+        - Naam: ${c.name}
+        - Relatie (Bedrijf): ${c.relation}
+        - Onderwerp (Taak): ${c.subject}
+        - Telefoon: ${c.phone}`
       ).join('\n\n');
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -105,13 +103,14 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         callbacks: {
           onopen: () => {
             setIsActive(true);
-            setStatus('Ik luister...');
+            setStatus('Ik luister nu...');
             const source = ctx.createMediaStreamSource(stream);
             const processor = ctx.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
               sessionPromise.then(s => {
                 if (!streamRef.current) return;
                 const inputData = e.inputBuffer.getChannelData(0);
+                // Resample naar 16kHz
                 const ratio = ctx.sampleRate / 16000;
                 const newLength = Math.round(inputData.length / ratio);
                 const resampledData = new Float32Array(newLength);
@@ -154,51 +153,63 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { voiceName: 'Puck' } as any },
           tools: [{ functionDeclarations: [
-            { name: 'makeCall', description: 'Bel het geselecteerde contact.', parameters: { type: Type.OBJECT, properties: {} } },
-            { name: 'findContactByName', description: 'Zoek iemand op naam.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
+            { name: 'makeCall', description: 'Start direct het bellen naar het huidige contact.', parameters: { type: Type.OBJECT, properties: {} } },
+            { name: 'findContactByName', description: 'Zoek iemand in de lijst op naam.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
           ]}] as any,
-          systemInstruction: `Je bent de DriveDialer Pro Assistent.
+          systemInstruction: `Je bent de DriveDialer Assistent. Je helpt een chauffeur met bellen.
             
-            DE DATA UIT DE EXCEL (GEBRUIK DIT ALTIJD):
-            ${contactDatabaseString}
+            GEBRUIK DEZE DATA (VERPLICHT):
+            ${contactDatabase}
             
-            HUIDIGE TAAK: Je staat nu bij Taak ${currentIndex + 1}.
-            
-            JOUW REGELS:
-            1. Als de gebruiker vraagt: "lees de eerste regel voor", "wat is de volgende taak", of "wie moet ik bellen", lees dan ALTIJD deze 4 velden voor:
-               - De NAAM van de contactpersoon.
-               - De RELATIE (Bedrijfsnaam).
-               - Het ONDERWERP (Wat er moet gebeuren).
-               - Het TELEFOONNUMMER.
-            2. De kolom 'Relatie' is essentieel, noem deze altijd.
-            3. Noem nooit dat je geen toegang hebt tot een spreadsheet. De data staat hierboven.
-            4. Spreek Nederlands, wees kort en bondig.
-            5. Gebruik 'makeCall' om het bellen te starten.`
+            INSTRUCTIES:
+            1. De gebruiker staat nu bij Regel ${currentIndex + 1}.
+            2. Als de gebruiker vraagt om informatie over een regel of contact, noem ALTIJD: 
+               - De Naam
+               - De Relatie (het bedrijf)
+               - Het Onderwerp
+               - Het Nummer
+            3. Noem NOOIT dat je geen toegang hebt tot de spreadsheet. Alle informatie staat hierboven.
+            4. Wees zeer kort en krachtig. Geen lange inleidingen.
+            5. Als de gebruiker zegt "bel hem", "bel haar" of "start gesprek", gebruik 'makeCall'.
+            6. Spreek Nederlands.`
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (e) { 
-      setStatus('Microfoon fout');
+      setStatus('Systeem Fout');
       setIsActive(false); 
     }
   };
 
   return (
-    <div className="w-full">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <button onClick={startVoiceSession} className={`h-40 md:h-56 rounded-[32px] flex flex-col items-center justify-center transition-all active:scale-95 shadow-2xl border-4 ${isActive ? 'bg-blue-600 border-blue-400 animate-pulse' : 'bg-blue-900 border-transparent'}`}>
-          <span className="text-white font-black text-4xl uppercase tracking-widest">{isActive ? 'STOP' : 'START'}</span>
-          <p className="mt-2 text-[10px] font-bold text-blue-200 uppercase tracking-[0.2em] opacity-60">Stem Assistent</p>
-        </button>
+    <div className="w-full space-y-6">
+      <button 
+        onClick={startVoiceSession} 
+        className={`w-full h-64 rounded-[48px] flex flex-col items-center justify-center transition-all active:scale-95 shadow-2xl border-8 ${
+          isActive ? 'bg-blue-600 border-blue-400 animate-pulse' : 'bg-slate-900 border-slate-800'
+        }`}
+      >
+        <div className={`w-24 h-24 rounded-full mb-6 flex items-center justify-center ${isActive ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
+          {isActive ? (
+            <svg className="w-12 h-12" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          ) : (
+            <svg className="w-12 h-12 ml-2" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          )}
+        </div>
+        <span className="text-white font-black text-4xl uppercase tracking-[0.2em]">{isActive ? 'LUISTEREN' : 'START ASSISTENT'}</span>
+        <p className="mt-4 text-[10px] font-bold text-blue-400 uppercase tracking-[0.3em]">{status}</p>
+      </button>
 
-        <button onClick={makeCall} className={`h-40 md:h-56 rounded-[32px] flex flex-col items-center justify-center p-6 text-center transition-all active:scale-95 shadow-2xl border-4 ${isStaged ? 'bg-red-600 border-white' : 'bg-red-950 border-transparent'}`}>
-          <span className="text-red-400 text-[9px] font-black uppercase tracking-[0.3em] mb-1">Nu Bellen</span>
-          <h2 className="font-black text-white text-2xl uppercase tracking-tighter line-clamp-1">{currentContact?.name || 'GEEN DATA'}</h2>
-          <p className="text-[10px] text-white font-bold uppercase mt-1 px-3 py-1 bg-white/10 rounded-lg">{currentContact?.relation || 'GEEN RELATIE'}</p>
-          <div className="mt-2 px-4 py-1 bg-black/30 rounded-full"><span className="text-[10px] font-black text-white uppercase tracking-widest">TIK OM TE BELLEN</span></div>
-        </button>
-      </div>
-      <div className="mt-4 text-center"><span className="text-[10px] font-black uppercase tracking-[0.4em] text-blue-500/50">{status}</span></div>
+      {currentContact && (
+        <div className="bg-white/5 border border-white/10 rounded-[32px] p-6 flex flex-col items-center text-center">
+          <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest mb-2">Huidige Selectie</span>
+          <h2 className="text-2xl font-black text-white uppercase">{currentContact.name}</h2>
+          <p className="text-sm font-bold text-white/50 mt-1">{currentContact.relation}</p>
+          <div className="mt-4 px-6 py-2 bg-blue-500/10 rounded-full border border-blue-500/20">
+            <span className="text-[10px] font-mono text-blue-400">{currentContact.phone}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
