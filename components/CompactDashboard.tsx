@@ -8,21 +8,24 @@ interface CompactDashboardProps {
 
 const CompactDashboard: React.FC<CompactDashboardProps> = ({ onSettingsClick, isSettingsOpen }) => {
   return (
-    <div className="bg-white/5 border border-white/10 p-6 rounded-[32px] flex items-center justify-between backdrop-blur-xl">
-      <div className="flex items-center gap-5">
-        <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20">
-          <span className="text-2xl">🚗</span>
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-4">
+        <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center font-bold text-xl">
+          🚗
         </div>
         <div>
-          <h1 className="text-lg font-black uppercase tracking-widest text-white leading-none">DriveDialer <span className="text-blue-500">PRO</span></h1>
-          <p className="text-[9px] font-bold text-white/30 uppercase tracking-[0.2em] mt-2">Hands-free Interface v2.5</p>
+          <h1 className="text-sm font-black uppercase tracking-[0.3em] text-white">DriveDialer</h1>
+          <div className="flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+            <p className="text-[9px] font-bold text-white/30 uppercase tracking-widest">System Online</p>
+          </div>
         </div>
       </div>
       
       <button 
         onClick={onSettingsClick}
         className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${
-          isSettingsOpen ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' : 'bg-white/5 text-white/40 hover:bg-white/10'
+          isSettingsOpen ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' : 'bg-white/5 text-white/40'
         }`}
       >
         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

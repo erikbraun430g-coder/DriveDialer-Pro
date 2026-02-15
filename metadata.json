@@ -1,7 +1,8 @@
+
 {
   "requestFramePermissions": [
     "microphone"
   ],
-  "name": "DriveDialer Pro",
-  "description": ""
+  "name": "DriveDialer Pure",
+  "description": "Ultra-minimalistische bel-assistent voor in de auto."
 }

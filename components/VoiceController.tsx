@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type } from '@google/genai';
 import { Contact } from '../types';
 
@@ -10,311 +10,294 @@ interface VoiceControllerProps {
   onCallComplete: (id: string) => void;
 }
 
-// Hulpmiddelen voor audio-encodering
+// Low-level audio utilities voor maximale snelheid
 function encode(bytes: Uint8Array) {
   let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
 }
 
 function decode(base64: string) {
   const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
   return bytes;
 }
 
-async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
-): Promise<AudioBuffer> {
+async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number): Promise<AudioBuffer> {
   const dataInt16 = new Int16Array(data.buffer);
-  const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-    }
-  }
+  const buffer = ctx.createBuffer(1, dataInt16.length, sampleRate);
+  const channelData = buffer.getChannelData(0);
+  for (let i = 0; i < dataInt16.length; i++) channelData[i] = dataInt16[i] / 32768.0;
   return buffer;
 }
 
 const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentIndex, setCurrentIndex, onCallComplete }) => {
   const [isActive, setIsActive] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
   const [volume, setVolume] = useState(0);
-  const [transcript, setTranscript] = useState('');
-  const [aiTranscript, setAiTranscript] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [aiText, setAiText] = useState('');
   
-  const inputAudioCtxRef = useRef<AudioContext | null>(null);
-  const outputAudioCtxRef = useRef<AudioContext | null>(null);
+  // Refs voor rigoureus geheugenbeheer
+  const audioCtxInRef = useRef<AudioContext | null>(null);
+  const audioCtxOutRef = useRef<AudioContext | null>(null);
   const sessionRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  
+
   const currentContact = contacts[currentIndex];
 
-  const stopVoiceSession = useCallback(() => {
+  // Microfoon en cache volledig vrijgeven
+  const stopAndReleaseEverything = useCallback(() => {
+    console.log("Releasing microphone and clearing cache...");
+    
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
+    
     if (sessionRef.current) {
-      try { sessionRef.current.close(); } catch (e) {}
+      try { sessionRef.current.close(); } catch(e) {}
       sessionRef.current = null;
     }
+
     sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
     sourcesRef.current.clear();
     
-    if (inputAudioCtxRef.current) {
-        inputAudioCtxRef.current.close().catch(() => {});
-        inputAudioCtxRef.current = null;
+    if (audioCtxInRef.current) {
+      audioCtxInRef.current.close().catch(() => {});
+      audioCtxInRef.current = null;
     }
-    if (outputAudioCtxRef.current) {
-        outputAudioCtxRef.current.close().catch(() => {});
-        outputAudioCtxRef.current = null;
+    if (audioCtxOutRef.current) {
+      audioCtxOutRef.current.close().catch(() => {});
+      audioCtxOutRef.current = null;
     }
-    
+
+    nextStartTimeRef.current = 0;
     setIsActive(false);
-    setIsProcessing(false);
+    setIsInitializing(false);
     setVolume(0);
-    setTranscript('');
-    setAiTranscript('');
   }, []);
 
-  const makeCall = useCallback(() => {
+  const triggerCall = useCallback(() => {
     if (!currentContact) return "Geen contact.";
-    const phone = currentContact.phone.replace(/\s+/g, '');
-    window.location.href = `tel:${phone}`;
-    onCallComplete(currentContact.id);
-    return "Ik start het gesprek.";
-  }, [currentContact, onCallComplete]);
-
-  const findContactByName = useCallback((name: string) => {
-    const foundIdx = contacts.findIndex(c => 
-      c.name.toLowerCase().includes(name.toLowerCase()) || 
-      c.relation.toLowerCase().includes(name.toLowerCase())
-    );
-    if (foundIdx !== -1) {
-      setCurrentIndex(foundIdx);
-      return `Contact ${contacts[foundIdx].name} geselecteerd. Moet ik bellen?`;
-    }
-    return "Niet gevonden.";
-  }, [contacts, setCurrentIndex]);
-
-  const startVoiceSession = async () => {
-    if (isActive) { stopVoiceSession(); return; }
+    const cleanNumber = currentContact.phone.replace(/[^0-9+]/g, '');
     
+    // Belangrijk: Eerst alles stoppen (mic vrijgeven!) dan bellen
+    const contactId = currentContact.id;
+    stopAndReleaseEverything();
+    
+    // Start het systeem-bel-proces
+    window.location.href = `tel:${cleanNumber}`;
+    onCallComplete(contactId);
+    
+    return "Gesprek wordt gestart.";
+  }, [currentContact, onCallComplete, stopAndReleaseEverything]);
+
+  const skipToNext = useCallback(() => {
+    if (currentIndex < contacts.length - 1) {
+      setCurrentIndex(currentIndex + 1);
+      // We herstarten de sessie niet automatisch om verwarring te voorkomen
+      stopAndReleaseEverything();
+      return "Volgende geladen.";
+    }
+    stopAndReleaseEverything();
+    return "Einde lijst.";
+  }, [currentIndex, contacts.length, setCurrentIndex, stopAndReleaseEverything]);
+
+  const startVoiceAssistant = async () => {
+    if (isActive) { stopAndReleaseEverything(); return; }
+    
+    setIsInitializing(true);
     try {
-      setIsProcessing(true);
+      // 1. Mic aanvragen
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+        audio: { echoCancellation: true, noiseSuppression: true } 
       });
       streamRef.current = stream;
 
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const inputCtx = new AudioCtx({ sampleRate: 16000 });
-      const outputCtx = new AudioCtx({ sampleRate: 24000 });
-      inputAudioCtxRef.current = inputCtx;
-      outputAudioCtxRef.current = outputCtx;
+      // 2. Audio contexts opzetten
+      const inCtx = new AudioContext({ sampleRate: 16000 });
+      const outCtx = new AudioContext({ sampleRate: 24000 });
+      await Promise.all([inCtx.resume(), outCtx.resume()]);
+      audioCtxInRef.current = inCtx;
+      audioCtxOutRef.current = outCtx;
 
-      // Cruciaal: Eerst de contexts hervatten voordat de sessie start
-      await Promise.all([inputCtx.resume(), outputCtx.resume()]);
-
+      // 3. AI Verbinden
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const contactData = contacts.map((c, i) => 
-        `[${i+1}] ${c.name} | Bedrijf: ${c.relation} | Taak: ${c.subject} | Tel: ${c.phone}`
-      ).join('\n');
+      const info = currentContact 
+        ? `${currentContact.name} van ${currentContact.relation}, taak: ${currentContact.subject}` 
+        : "Geen info";
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
           onopen: () => {
             setIsActive(true);
-            setIsProcessing(false);
-            const source = inputCtx.createMediaStreamSource(stream);
-            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+            setIsInitializing(false);
             
-            const analyser = inputCtx.createAnalyser();
-            analyser.fftSize = 64;
+            const source = inCtx.createMediaStreamSource(stream);
+            const processor = inCtx.createScriptProcessor(4096, 1, 1);
+            const analyser = inCtx.createAnalyser();
+            analyser.fftSize = 32;
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
             source.connect(analyser);
-
-            const updateVolume = () => {
-              if (!streamRef.current) return;
-              analyser.getByteFrequencyData(dataArray);
-              let max = 0;
-              for(let i=0; i<dataArray.length; i++) if(dataArray[i] > max) max = dataArray[i];
-              setVolume(max);
-              requestAnimationFrame(updateVolume);
-            };
-            updateVolume();
-
             processor.onaudioprocess = (e) => {
-              sessionPromise.then(s => {
-                if (!streamRef.current || !s) return;
-                const inputData = e.inputBuffer.getChannelData(0);
-                const int16 = new Int16Array(inputData.length);
-                for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
-                s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } });
+              if (!sessionRef.current) return;
+              const inputData = e.inputBuffer.getChannelData(0);
+              const int16 = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
+              sessionRef.current.sendRealtimeInput({ 
+                media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } 
               });
+              
+              analyser.getByteFrequencyData(dataArray);
+              setVolume(Math.max(...Array.from(dataArray)));
             };
             source.connect(processor);
-            processor.connect(inputCtx.destination);
+            processor.connect(inCtx.destination);
           },
-          onmessage: async (message: LiveServerMessage) => {
-            // TypeScript Fix: Alleen strings doorgeven aan setters
-            if (message.serverContent?.inputTranscription?.text) {
-              setTranscript(message.serverContent.inputTranscription.text);
-            }
-            if (message.serverContent?.outputTranscription?.text) {
-              setAiTranscript(message.serverContent.outputTranscription.text);
-            }
-            if (message.serverContent?.turnComplete) {
-              setTimeout(() => { setTranscript(''); setAiTranscript(''); }, 2000);
+          onmessage: async (msg: LiveServerMessage) => {
+            if (msg.serverContent?.outputTranscription?.text) {
+              setAiText(msg.serverContent.outputTranscription.text);
             }
 
-            // Audio afspelen
-            const parts = message.serverContent?.modelTurn?.parts;
-            if (parts && outputAudioCtxRef.current) {
-              for (const part of parts) {
-                if (part.inlineData?.data) {
-                  const audioBuffer = await decodeAudioData(decode(part.inlineData.data), outputAudioCtxRef.current, 24000, 1);
-                  const source = outputAudioCtxRef.current.createBufferSource();
-                  source.buffer = audioBuffer;
-                  source.connect(outputAudioCtxRef.current.destination);
-                  const startTime = Math.max(nextStartTimeRef.current, outputAudioCtxRef.current.currentTime);
+            // Audio output van AI afspelen
+            if (msg.serverContent?.modelTurn?.parts) {
+              for (const part of msg.serverContent.modelTurn.parts) {
+                if (part.inlineData?.data && audioCtxOutRef.current) {
+                  const buf = await decodeAudioData(decode(part.inlineData.data), audioCtxOutRef.current, 24000);
+                  const source = audioCtxOutRef.current.createBufferSource();
+                  source.buffer = buf;
+                  source.connect(audioCtxOutRef.current.destination);
+                  const startTime = Math.max(nextStartTimeRef.current, audioCtxOutRef.current.currentTime);
                   source.start(startTime);
-                  nextStartTimeRef.current = startTime + audioBuffer.duration;
+                  nextStartTimeRef.current = startTime + buf.duration;
                   sourcesRef.current.add(source);
+                  source.onended = () => sourcesRef.current.delete(source);
                 }
               }
             }
 
-            // Functies uitvoeren
-            if (message.toolCall?.functionCalls) {
-              for (const fc of message.toolCall.functionCalls) {
+            // Functies uitvoeren (Bellen of Volgende)
+            if (msg.toolCall?.functionCalls) {
+              for (const fc of msg.toolCall.functionCalls) {
                 let res = "";
-                if (fc.name === 'makeCall') res = makeCall();
-                if (fc.name === 'findContactByName') res = findContactByName((fc.args as any)?.name || "");
-                sessionPromise.then(s => {
-                    if (s) s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: res } } });
-                });
+                if (fc.name === 'makeCall') res = triggerCall();
+                if (fc.name === 'skipContact') res = skipToNext();
+                
+                if (sessionRef.current) {
+                    sessionRef.current.sendToolResponse({ 
+                        functionResponses: { id: fc.id, name: fc.name, response: { result: res } } 
+                    });
+                }
               }
             }
 
-            if (message.serverContent?.interrupted) {
-               sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
-               sourcesRef.current.clear();
-               nextStartTimeRef.current = 0;
+            if (msg.serverContent?.interrupted) {
+              sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+              sourcesRef.current.clear();
+              nextStartTimeRef.current = 0;
             }
           },
-          onerror: (e) => { 
-            console.error("AI Session Error:", e);
-            stopVoiceSession(); 
-          },
-          onclose: (e) => {
-            console.log("AI Session Closed:", e);
-            stopVoiceSession();
-          }
+          onerror: (e) => { console.error(e); stopAndReleaseEverything(); },
+          onclose: () => stopAndReleaseEverything()
         },
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { voiceName: 'Puck' } as any },
-          inputAudioTranscription: {},
           outputAudioTranscription: {},
           tools: [{ functionDeclarations: [
-            { name: 'makeCall', description: 'Start het bellen.', parameters: { type: Type.OBJECT, properties: {} } },
-            { name: 'findContactByName', description: 'Zoek contact in de lijst.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
+            { name: 'makeCall', description: 'Start het telefoongesprek met de huidige persoon.', parameters: { type: Type.OBJECT, properties: {} } },
+            { name: 'skipContact', description: 'Sla deze persoon over en ga naar de volgende.', parameters: { type: Type.OBJECT, properties: {} } }
           ]}] as any,
-          systemInstruction: `Je bent DriveDialer. 
-          BESCHIKBARE CONTACTEN:
-          ${contactData}
-          STRIKTE REGELS:
-          1. Zodra verbonden, zeg je direct: "Systeem online."
-          2. Noem bij vragen ALTIJD Naam en Bedrijf.
-          3. Gebruik 'makeCall' om te bellen.
-          4. Wees extreem kort (max 12 woorden). Nederlands.`
+          systemInstruction: `Je bent de DriveDialer rij-assistent.
+          HUIDIG CONTACT: ${info}.
+          
+          TASK:
+          Lees direct bij opstarten voor: "Drive Dialer staat klaar. We gaan ${currentContact?.name} van ${currentContact?.relation} bellen voor ${currentContact?.subject}. Zal ik de verbinding starten?"
+          
+          INSTRUCTIES:
+          1. Als de gebruiker bevestigt (Ja, bel maar, start), gebruik 'makeCall'.
+          2. Als de gebruiker weigert (Nee, volgende, later), gebruik 'skipContact'.
+          3. Wees zeer kort en krachtig. Nederlands.`
         }
       });
       sessionRef.current = await sessionPromise;
-    } catch (e: any) { 
-      console.error("Setup Error:", e);
-      stopVoiceSession();
+    } catch (e) {
+      console.error(e);
+      stopAndReleaseEverything();
     }
   };
 
+  useEffect(() => () => stopAndReleaseEverything(), [stopAndReleaseEverything]);
+
   return (
-    <div className="w-full flex flex-col items-center space-y-12 py-4">
+    <div className="flex flex-col items-center w-full space-y-12 h-full justify-center">
+      
+      {/* Grote bedieningsknop */}
       <div className="relative">
-        {/* Pulsing visualizer background */}
-        {isActive && (
-          <div 
-            className="absolute inset-0 rounded-full bg-blue-600/30 blur-2xl transition-all duration-75 scale-125"
-            style={{ opacity: 0.2 + (volume / 100) }}
-          />
-        )}
+        <div className={`absolute inset-0 rounded-full blur-3xl transition-all duration-300 scale-150 ${
+          isActive ? 'bg-blue-500/30' : 'bg-transparent'
+        }`} style={{ opacity: isActive ? 0.2 + (volume / 255) : 0 }} />
         
         <button 
-          onClick={startVoiceSession} 
-          disabled={isProcessing}
-          className={`relative w-56 h-56 rounded-full flex flex-col items-center justify-center transition-all active:scale-90 border-[14px] ${
-            isActive ? 'bg-blue-600 border-white shadow-[0_0_60px_rgba(37,99,235,0.5)]' : 'bg-slate-900 border-slate-800'
-          } ${isProcessing ? 'animate-pulse opacity-50' : ''}`}
+          onClick={startVoiceAssistant}
+          disabled={isInitializing}
+          className={`relative w-72 h-72 rounded-full flex flex-col items-center justify-center border-[18px] transition-all active:scale-90 ${
+            isActive ? 'bg-blue-600 border-white shadow-2xl' : 'bg-slate-900 border-slate-800 shadow-lg'
+          } ${isInitializing ? 'animate-pulse opacity-50' : ''}`}
         >
-          <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-2 ${isActive ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
-            {isActive ? (
-               <div className="flex items-end gap-1.5 h-6 text-blue-600">
-                 <div className="w-1.5 bg-current rounded-full transition-all duration-75" style={{ height: `${20 + (volume * 0.8)}%` }}></div>
-                 <div className="w-1.5 bg-current rounded-full transition-all duration-75" style={{ height: `${40 + (volume * 0.4)}%` }}></div>
-                 <div className="w-1.5 bg-current rounded-full transition-all duration-75" style={{ height: `${10 + (volume * 1.2)}%` }}></div>
-               </div>
-            ) : (
-              <svg className="w-10 h-10" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-            )}
+          <div className="text-6xl mb-3">
+            {isActive ? '⏹️' : '🎙️'}
           </div>
-          <span className="text-white font-black text-xl uppercase tracking-widest leading-none">
-            {isProcessing ? 'Wacht...' : isActive ? 'STOP' : 'START'}
+          <span className="text-white font-black text-3xl uppercase tracking-tighter">
+            {isInitializing ? '...' : isActive ? 'STOP' : 'START'}
           </span>
         </button>
       </div>
 
-      {/* Transcriptie feedback */}
-      <div className="h-16 flex flex-col items-center justify-center px-8 w-full">
+      {/* AI Status / Feedback */}
+      <div className="h-12 text-center px-4">
         {isActive && (
-          <div className="text-center space-y-2">
-            {transcript && (
-              <p className="text-[11px] text-white/40 uppercase font-black tracking-[0.2em] italic max-w-xs leading-tight">
-                "{transcript}"
-              </p>
-            )}
-            {aiTranscript && (
-              <p className="text-xl text-blue-400 font-black uppercase tracking-tighter leading-none">
-                {aiTranscript}
-              </p>
-            )}
-          </div>
+          <p className="text-xl font-bold text-blue-400 uppercase tracking-tight animate-in fade-in slide-in-from-bottom-2">
+            {aiText || "Ik luister naar je..."}
+          </p>
         )}
       </div>
 
-      {/* Alleen de naam van het geselecteerde contact */}
+      {/* Contact Details (Extra groot voor leesbaarheid tijdens rijden) */}
       {currentContact && (
-        <div className="text-center pt-4">
-          <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.6em] mb-4 opacity-50">Geselecteerd</p>
-          <h2 className="text-7xl font-black text-white uppercase tracking-tighter leading-none break-words max-w-[90vw]">
-            {currentContact.name}
-          </h2>
+        <div className="w-full text-center space-y-6 pt-4">
+          <div className="space-y-2">
+            <p className="text-blue-500 font-black text-xs uppercase tracking-[0.5em] opacity-60">Volgende taak:</p>
+            <h2 className="text-8xl font-black text-white uppercase tracking-tighter leading-[0.85] px-2 break-words">
+              {currentContact.name}
+            </h2>
+          </div>
+          
+          <div className="space-y-4">
+            <p className="text-4xl font-bold text-white/50 uppercase tracking-widest italic">
+              {currentContact.relation}
+            </p>
+            <div className="inline-block bg-white/5 border border-white/10 px-8 py-4 rounded-3xl">
+              <p className="text-sm font-black text-blue-400 uppercase tracking-widest mb-1">Onderwerp:</p>
+              <p className="text-2xl font-bold text-white uppercase">{currentContact.subject}</p>
+            </div>
+          </div>
         </div>
+      )}
+
+      {/* Handmatige Skip-knop als backup */}
+      {!isActive && currentContact && (
+        <button 
+          onClick={() => setCurrentIndex(currentIndex + 1)}
+          className="text-white/20 font-black uppercase text-xs tracking-widest mt-4 hover:text-white transition-colors"
+        >
+          Overslaan ⏭️
+        </button>
       )}
     </div>
   );
