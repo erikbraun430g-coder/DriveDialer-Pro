@@ -85,20 +85,22 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         callbacks: {
           onopen: () => {
             setIsActive(true);
-            const source = audioContextRef.current!.createMediaStreamSource(stream);
-            const processor = audioContextRef.current!.createScriptProcessor(4096, 1, 1);
+            if (!audioContextRef.current) return;
+            const source = audioContextRef.current.createMediaStreamSource(stream);
+            const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
               sessionPromise.then(s => {
                 if (!streamRef.current) return;
                 const input = e.inputBuffer.getChannelData(0);
                 const int16 = new Int16Array(input.length);
                 for (let i = 0; i < input.length; i++) int16[i] = input[i] * 32768;
-                const base64 = btoa(String.fromCharCode(...new Uint8Array(int16.buffer)));
+                const binary = String.fromCharCode(...new Uint8Array(int16.buffer));
+                const base64 = btoa(binary);
                 s.sendRealtimeInput({ media: { data: base64, mimeType: 'audio/pcm;rate=16000' } });
               });
             };
             source.connect(processor);
-            processor.connect(audioContextRef.current!.destination);
+            processor.connect(audioContextRef.current.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
             const audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
@@ -113,12 +115,17 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               nextStartTimeRef.current = start + buf.duration;
               sourcesRef.current.add(src);
             }
-            if (msg.toolCall) {
+            if (msg.toolCall?.functionCalls) {
               for (const fc of msg.toolCall.functionCalls) {
                 let res = "";
                 if (fc.name === 'makeCall') res = makeCall();
-                if (fc.name === 'findContactByName') res = findContactByName(fc.args.name as string);
-                sessionPromise.then(s => s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: res } } }));
+                if (fc.name === 'findContactByName') {
+                  const args = fc.args as any;
+                  res = findContactByName(args?.name || "");
+                }
+                sessionPromise.then(s => s.sendToolResponse({ 
+                  functionResponses: { id: fc.id, name: fc.name, response: { result: res } } 
+                }));
               }
             }
             if (msg.serverContent?.turnComplete) setTimeout(() => stopVoiceSession(), 1800);
