@@ -15,13 +15,15 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   const [isStaged, setIsStaged] = useState(false); 
   const [status, setStatus] = useState('Systeem Gereed');
   
-  const audioContextRef = useRef<AudioContext | null>(null);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
+  const outputAudioContextRef = useRef<AudioContext | null>(null);
   const sessionRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   
   const currentContact = contacts[currentIndex];
+  const nextContact = contacts[currentIndex + 1];
 
   useEffect(() => {
     if ('mediaSession' in navigator) {
@@ -67,7 +69,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       setCurrentIndex(foundIdx);
       setIsStaged(true);
       setStatus(`${contacts[foundIdx].name} gevonden`);
-      return `Gevonden: ${contacts[foundIdx].name} over ${contacts[foundIdx].subject}. Druk op play op je stuur of de rode knop om te bellen.`;
+      return `Gevonden: ${contacts[foundIdx].name} over ${contacts[foundIdx].subject}. Druk op bellen.`;
     }
     return `Niet gevonden.`;
   }, [contacts, setCurrentIndex]);
@@ -75,19 +77,23 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   const startVoiceSession = async () => {
     if (isActive) { stopVoiceSession(); return; }
     try {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      // 16kHz voor input (AI begrijpt dit het beste), 24kHz voor output (API standaard)
+      inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       setStatus('Luisteren...');
+      
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
           onopen: () => {
             setIsActive(true);
-            if (!audioContextRef.current) return;
-            const source = audioContextRef.current.createMediaStreamSource(stream);
-            const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+            if (!inputAudioContextRef.current) return;
+            const source = inputAudioContextRef.current.createMediaStreamSource(stream);
+            const processor = inputAudioContextRef.current.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
               sessionPromise.then(s => {
                 if (!streamRef.current) return;
@@ -100,17 +106,17 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               });
             };
             source.connect(processor);
-            processor.connect(audioContextRef.current.destination);
+            processor.connect(inputAudioContextRef.current.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
             const audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (audio && audioContextRef.current) {
+            if (audio && outputAudioContextRef.current) {
               const u8 = Uint8Array.from(atob(audio), c => c.charCodeAt(0));
-              const buf = await decodeAudioData(u8, audioContextRef.current);
-              const src = audioContextRef.current.createBufferSource();
+              const buf = await decodeAudioData(u8, outputAudioContextRef.current);
+              const src = outputAudioContextRef.current.createBufferSource();
               src.buffer = buf;
-              src.connect(audioContextRef.current.destination);
-              const start = Math.max(nextStartTimeRef.current, audioContextRef.current.currentTime);
+              src.connect(outputAudioContextRef.current.destination);
+              const start = Math.max(nextStartTimeRef.current, outputAudioContextRef.current.currentTime);
               src.start(start);
               nextStartTimeRef.current = start + buf.duration;
               sourcesRef.current.add(src);
@@ -128,16 +134,23 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
                 }));
               }
             }
-            if (msg.serverContent?.turnComplete) setTimeout(() => stopVoiceSession(), 1800);
+            if (msg.serverContent?.turnComplete) {
+              setTimeout(() => {
+                if (!audio) stopVoiceSession();
+              }, 2000);
+            }
           }
         },
         config: {
           responseModalities: [Modality.AUDIO],
           tools: [{ functionDeclarations: [
-            { name: 'makeCall', description: 'Start het bellen.', parameters: { type: Type.OBJECT, properties: {} } },
+            { name: 'makeCall', description: 'Start het bellen van de geselecteerde persoon.', parameters: { type: Type.OBJECT, properties: {} } },
             { name: 'findContactByName', description: 'Zoek een contact op naam.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
           ]}] as any,
-          systemInstruction: `Je bent de DriveDialer Assistent. Je helpt de bestuurder hands-free te bellen. Wees extreem kort en zakelijk.`
+          systemInstruction: `Je bent de DriveDialer Assistent.
+            Huidig contact (de eerste taak): ${currentContact?.name || 'geen'} over "${currentContact?.subject || 'geen'}".
+            Volgend contact: ${nextContact?.name || 'geen'}.
+            Je helpt de bestuurder hands-free te bellen. Als de gebruiker vraagt om de eerste taak of persoon voor te lezen, noem dan de naam en het onderwerp. Wees kort en zakelijk.`
         }
       });
       sessionRef.current = await sessionPromise;
@@ -146,35 +159,35 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
   return (
     <div className="w-full">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8 lg:gap-12">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8">
         <button 
           onClick={startVoiceSession}
-          className={`h-52 md:aspect-square rounded-[40px] md:rounded-[64px] flex flex-col items-center justify-center transition-all duration-500 active:scale-95 shadow-2xl relative ${
+          className={`h-48 md:h-auto md:aspect-square rounded-[40px] md:rounded-[64px] flex flex-col items-center justify-center transition-all duration-500 active:scale-95 shadow-2xl relative ${
             isActive ? 'bg-blue-500 animate-pulse' : 'bg-blue-800'
           }`}
         >
-          <span className="text-white font-black text-4xl sm:text-6xl lg:text-7xl uppercase tracking-[0.2em]">START</span>
+          <span className="text-white font-black text-4xl sm:text-6xl uppercase tracking-[0.2em]">START</span>
           <p className="mt-3 text-[9px] font-black text-blue-200 uppercase tracking-widest">{isActive ? 'Luisteren...' : 'Stemherkenning'}</p>
         </button>
 
         <button 
           onClick={makeCall}
-          className={`h-52 md:aspect-square rounded-[40px] md:rounded-[64px] flex flex-col items-center justify-center p-8 sm:p-12 text-center transition-all duration-500 active:scale-95 shadow-2xl border-4 ${
+          className={`h-48 md:h-auto md:aspect-square rounded-[40px] md:rounded-[64px] flex flex-col items-center justify-center p-8 text-center transition-all duration-500 active:scale-95 shadow-2xl border-4 ${
             isStaged ? 'bg-red-500 border-white shadow-[0_0_80px_rgba(239,68,68,0.5)]' : 'bg-red-900 border-transparent hover:bg-red-800'
           }`}
         >
-          <span className="text-red-300 text-[9px] font-black uppercase tracking-[0.4em] mb-2 sm:mb-4">Huidig Contact</span>
-          <h2 className="font-black text-white text-3xl sm:text-5xl lg:text-6xl uppercase tracking-tighter line-clamp-2 leading-tight">
+          <span className="text-red-300 text-[9px] font-black uppercase tracking-[0.4em] mb-2">Nu Bellen</span>
+          <h2 className="font-black text-white text-3xl sm:text-4xl lg:text-5xl uppercase tracking-tighter line-clamp-1 leading-tight">
             {currentContact?.name || '---'}
           </h2>
-          <div className="mt-4 sm:mt-8 px-5 py-1.5 bg-black/20 rounded-full">
+          <div className="mt-4 px-5 py-1.5 bg-black/20 rounded-full">
             <span className="text-[10px] font-black text-white uppercase tracking-widest">
-              {isStaged ? 'Bevestig Bellen' : 'Druk om te bellen'}
+              {isStaged ? 'Bevestig' : 'Tik om te bellen'}
             </span>
           </div>
         </button>
       </div>
-      <div className="mt-6 sm:mt-12 text-center opacity-30">
+      <div className="mt-6 text-center opacity-30">
         <p className="text-[9px] font-black uppercase tracking-[0.5em]">{status}</p>
       </div>
     </div>
