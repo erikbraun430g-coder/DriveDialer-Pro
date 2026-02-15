@@ -82,7 +82,6 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     if (isActive) { stopVoiceSession(); return; }
     
     try {
-      // Forceer initialisatie binnen user-gesture voor iOS
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioCtx();
       audioCtxRef.current = ctx;
@@ -90,7 +89,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      setStatus('Sessie starten...');
+      setStatus('Verbinden...');
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
@@ -107,8 +106,6 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               sessionPromise.then(s => {
                 if (!streamRef.current) return;
                 const inputData = e.inputBuffer.getChannelData(0);
-                
-                // Eenvoudige resampling naar 16kHz (iPhone is meestal 48kHz of 44.1kHz)
                 const ratio = ctx.sampleRate / 16000;
                 const newLength = Math.round(inputData.length / ratio);
                 const resampledData = new Float32Array(newLength);
@@ -117,9 +114,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
                 }
 
                 const int16 = new Int16Array(resampledData.length);
-                for (let i = 0; i < resampledData.length; i++) {
-                  int16[i] = resampledData[i] * 32768;
-                }
+                for (let i = 0; i < resampledData.length; i++) int16[i] = resampledData[i] * 32768;
                 const base64 = encode(new Uint8Array(int16.buffer));
                 s.sendRealtimeInput({ media: { data: base64, mimeType: 'audio/pcm;rate=16000' } });
               });
@@ -134,9 +129,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               const dataInt16 = new Int16Array(audioBytes.buffer);
               const buffer = audioCtxRef.current.createBuffer(1, dataInt16.length, 24000);
               const channelData = buffer.getChannelData(0);
-              for (let i = 0; i < dataInt16.length; i++) {
-                channelData[i] = dataInt16[i] / 32768.0;
-              }
+              for (let i = 0; i < dataInt16.length; i++) channelData[i] = dataInt16[i] / 32768.0;
               
               const source = audioCtxRef.current.createBufferSource();
               source.buffer = buffer;
@@ -159,36 +152,38 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               }
             }
             if (msg.serverContent?.turnComplete) setStatus('Ik luister...');
-          },
-          onerror: (e) => {
-            console.error(e);
-            setStatus('Verbindingsfout');
-            stopVoiceSession();
           }
         },
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
           tools: [{ functionDeclarations: [
-            { name: 'makeCall', description: 'Bel het huidige contact.', parameters: { type: Type.OBJECT, properties: {} } },
-            { name: 'findContactByName', description: 'Zoek iemand in de lijst.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
+            { name: 'makeCall', description: 'Start het bellen.', parameters: { type: Type.OBJECT, properties: {} } },
+            { name: 'findContactByName', description: 'Zoek iemand op naam.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
           ]}] as any,
-          systemInstruction: `Je bent de DriveDialer Assistent. Spreek Nederlands.
+          systemInstruction: `Je bent de DriveDialer Assistent. Help de bestuurder hands-free te bellen.
             
-            DATA UIT DE EXCEL/LIJST:
-            - Eerste taak / Eerste regel: ${currentContact?.name || 'Leeg'} (Onderwerp: ${currentContact?.subject || 'geen'}).
-            - Volgende taak: ${nextContact?.name || 'Leeg'}.
+            HUIDIGE TAAK (EERSTE REGEL):
+            - Naam: ${currentContact?.name || 'Leeg'}
+            - Organisatie: ${currentContact?.organization || 'Niet vermeld'}
+            - Onderwerp/Taak: ${currentContact?.subject || 'Geen details'}
+            - Telefoon: ${currentContact?.phone || 'Geen nummer'}
             
-            INSTRUCTIES:
-            - Als de gebruiker vraagt om "de eerste taak" of "de eerste regel" voor te lezen, vertel dan de naam en het onderwerp.
-            - Wees extreem kort en help de bestuurder veilig te bellen.
-            - Zeg nooit "Ik heb geen toegang tot je excel", want de data staat hierboven.`
+            VOLGENDE TAAK (TWEEDE REGEL):
+            - Naam: ${nextContact?.name || 'Niemand'}
+            - Organisatie: ${nextContact?.organization || ''}
+            
+            GEDRAG:
+            - Als de gebruiker vraagt: "lees de eerste taak voor" of "lees de eerste regel uit de excel voor", lees dan ALLES voor: de naam, het bedrijf, het onderwerp en het telefoonnummer.
+            - Wees kort en zakelijk. Zeg niet: "natuurlijk lees ik dat voor". Zeg gewoon direct: "De eerste regel is..."
+            - Als ze vragen om te bellen, gebruik de 'makeCall' tool.
+            - Spreek Nederlands.`
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (e) { 
       console.error(e);
-      setStatus('Microfoon geweigerd');
+      setStatus('Fout bij microfoon');
       setIsActive(false); 
     }
   };
@@ -198,26 +193,27 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <button 
           onClick={startVoiceSession}
-          className={`h-40 md:h-56 rounded-[32px] flex flex-col items-center justify-center transition-all active:scale-95 shadow-2xl relative border-4 ${
+          className={`h-40 md:h-56 rounded-[32px] flex flex-col items-center justify-center transition-all active:scale-95 shadow-2xl border-4 ${
             isActive ? 'bg-blue-600 border-blue-400 animate-pulse' : 'bg-blue-900 border-transparent'
           }`}
         >
           <span className="text-white font-black text-4xl uppercase tracking-widest">{isActive ? 'STOP' : 'START'}</span>
-          <p className="mt-2 text-[10px] font-bold text-blue-200 uppercase tracking-[0.2em] opacity-60">Spraakbesturing</p>
+          <p className="mt-2 text-[10px] font-bold text-blue-200 uppercase tracking-[0.2em] opacity-60">Spraak Assistent</p>
         </button>
 
         <button 
           onClick={makeCall}
           className={`h-40 md:h-56 rounded-[32px] flex flex-col items-center justify-center p-6 text-center transition-all active:scale-95 shadow-2xl border-4 ${
-            isStaged ? 'bg-red-600 border-white animate-bounce' : 'bg-red-950 border-transparent'
+            isStaged ? 'bg-red-600 border-white' : 'bg-red-950 border-transparent'
           }`}
         >
           <span className="text-red-400 text-[9px] font-black uppercase tracking-[0.3em] mb-1">Nu Bellen</span>
           <h2 className="font-black text-white text-2xl uppercase tracking-tighter line-clamp-1">
             {currentContact?.name || 'GEEN'}
           </h2>
-          <div className="mt-3 px-4 py-1 bg-black/30 rounded-full">
-            <span className="text-[10px] font-black text-white uppercase">Tik om te bellen</span>
+          <p className="text-[10px] text-white/40 font-bold uppercase mt-1">{currentContact?.organization || ''}</p>
+          <div className="mt-2 px-4 py-1 bg-black/30 rounded-full">
+            <span className="text-[10px] font-black text-white uppercase tracking-widest">TIK OM TE BELLEN</span>
           </div>
         </button>
       </div>
