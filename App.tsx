@@ -15,9 +15,10 @@ const App: React.FC = () => {
     if (savedContacts) {
       setContacts(JSON.parse(savedContacts));
     } else {
+      // Mock data voor eerste gebruik
       const defaultContacts: Contact[] = [
-        { id: '1', name: 'Sophie de Boer', relation: 'De Boer Advies', subject: 'Afspraak bevestigen', phone: '+31612345678', status: 'pending' },
-        { id: '2', name: 'Jan Jansen', relation: 'Solar Pro', subject: 'Offerte opvolgen', phone: '+31687654321', status: 'pending' }
+        { id: '1', name: 'Sophie de Boer', relation: 'De Boer Advies', subject: 'Contract tekenen', phone: '0612345678', status: 'pending' },
+        { id: '2', name: 'Mark van Dijk', relation: 'Vandijk Bouw', subject: 'Offerte checken', phone: '0698765432', status: 'pending' }
       ];
       setContacts(defaultContacts);
     }
@@ -38,14 +39,15 @@ const App: React.FC = () => {
 
   return (
     <div className="h-[100svh] bg-black text-white overflow-hidden flex flex-col font-sans select-none">
-      <div className="max-w-2xl mx-auto w-full h-full flex flex-col p-6">
+      <div className="max-w-3xl mx-auto w-full h-full flex flex-col p-8">
         
+        {/* Header - Alleen zichtbaar als niet actief aan het dialen */}
         <CompactDashboard 
           onSettingsClick={() => setCurrentSection(s => s === AppSection.SETTINGS ? AppSection.DIALER : AppSection.SETTINGS)} 
           isSettingsOpen={currentSection === AppSection.SETTINGS}
         />
 
-        <div className="flex-1 mt-6">
+        <div className="flex-1 mt-4 relative">
           {currentSection === AppSection.SETTINGS ? (
             <div className="h-full overflow-y-auto scrollbar-hide">
               <ImportScreen 
@@ -54,7 +56,7 @@ const App: React.FC = () => {
               />
             </div>
           ) : (
-            <div className="h-full flex flex-col">
+            <div className="h-full">
               {contacts.length > 0 && currentIndex < contacts.length ? (
                 <VoiceController 
                   contacts={contacts} 
@@ -63,17 +65,20 @@ const App: React.FC = () => {
                   onCallComplete={markAsCalled}
                 />
               ) : (
-                <div className="flex-1 flex flex-col items-center justify-center text-center space-y-8">
-                  <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center text-4xl mb-4">
-                    🏁
+                <div className="flex-1 h-full flex flex-col items-center justify-center text-center space-y-10">
+                  <div className="w-40 h-40 bg-white/5 rounded-[60px] flex items-center justify-center text-7xl shadow-2xl">
+                    ✅
                   </div>
-                  <h2 className="text-4xl font-black uppercase tracking-tighter">Lijst Voltooid</h2>
+                  <div>
+                    <h2 className="text-5xl font-black uppercase tracking-tighter mb-4">Lijst Klaar</h2>
+                    <p className="text-white/30 font-bold uppercase tracking-widest text-sm">Alle taken zijn afgehandeld</p>
+                  </div>
                   <button 
                     onClick={() => {
                         setCurrentIndex(0);
                         setCurrentSection(AppSection.SETTINGS);
                     }}
-                    className="bg-blue-600 px-12 py-6 rounded-[32px] font-black uppercase tracking-widest shadow-2xl shadow-blue-600/20 active:scale-95 transition-all"
+                    className="bg-blue-600 px-16 py-8 rounded-[40px] font-black uppercase tracking-[0.2em] text-xl shadow-2xl active:scale-95 transition-all"
                   >
                     Nieuwe Lijst
                   </button>
@@ -83,19 +88,16 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Progress indicator */}
+        {/* Progress indicator - Subtiel onderaan */}
         {currentSection === AppSection.DIALER && contacts.length > 0 && (
-          <div className="pt-6 pb-2 border-t border-white/5">
-            <div className="flex justify-between items-center mb-3">
-              <span className="text-[10px] font-black text-white/20 uppercase tracking-[0.4em]">
-                Voortgang: {currentIndex + 1} / {contacts.length}
-              </span>
-            </div>
-            <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-blue-600 transition-all duration-500 ease-out"
-                style={{ width: `${((currentIndex + 1) / contacts.length) * 100}%` }}
-              />
+          <div className="pt-8 border-t border-white/5 flex items-center justify-between">
+            <span className="text-xs font-black text-white/20 uppercase tracking-[0.5em]">
+              {currentIndex + 1} van {contacts.length}
+            </span>
+            <div className="flex gap-2">
+              {contacts.map((_, i) => (
+                <div key={i} className={`h-1 rounded-full transition-all duration-500 ${i === currentIndex ? 'w-12 bg-blue-500' : 'w-2 bg-white/10'}`} />
+              ))}
             </div>
           </div>
         )}
