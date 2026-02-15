@@ -146,36 +146,36 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
   return (
     <div className="w-full">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 lg:gap-12">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8 lg:gap-12">
         <button 
           onClick={startVoiceSession}
-          className={`aspect-square rounded-[64px] flex flex-col items-center justify-center transition-all duration-500 active:scale-95 shadow-2xl relative ${
+          className={`h-52 md:aspect-square rounded-[40px] md:rounded-[64px] flex flex-col items-center justify-center transition-all duration-500 active:scale-95 shadow-2xl relative ${
             isActive ? 'bg-blue-500 animate-pulse' : 'bg-blue-800'
           }`}
         >
-          <span className="text-white font-black text-6xl lg:text-7xl uppercase tracking-[0.2em]">START</span>
-          <p className="mt-4 text-[10px] font-black text-blue-200 uppercase tracking-widest">{isActive ? 'Luisteren...' : 'Stemherkenning'}</p>
+          <span className="text-white font-black text-4xl sm:text-6xl lg:text-7xl uppercase tracking-[0.2em]">START</span>
+          <p className="mt-3 text-[9px] font-black text-blue-200 uppercase tracking-widest">{isActive ? 'Luisteren...' : 'Stemherkenning'}</p>
         </button>
 
         <button 
           onClick={makeCall}
-          className={`aspect-square rounded-[64px] flex flex-col items-center justify-center p-12 text-center transition-all duration-500 active:scale-95 shadow-2xl border-4 ${
+          className={`h-52 md:aspect-square rounded-[40px] md:rounded-[64px] flex flex-col items-center justify-center p-8 sm:p-12 text-center transition-all duration-500 active:scale-95 shadow-2xl border-4 ${
             isStaged ? 'bg-red-500 border-white shadow-[0_0_80px_rgba(239,68,68,0.5)]' : 'bg-red-900 border-transparent hover:bg-red-800'
           }`}
         >
-          <span className="text-red-300 text-[10px] font-black uppercase tracking-[0.4em] mb-4">Huidig Contact</span>
-          <h2 className="font-black text-white text-5xl lg:text-6xl uppercase tracking-tighter break-words">
+          <span className="text-red-300 text-[9px] font-black uppercase tracking-[0.4em] mb-2 sm:mb-4">Huidig Contact</span>
+          <h2 className="font-black text-white text-3xl sm:text-5xl lg:text-6xl uppercase tracking-tighter line-clamp-2 leading-tight">
             {currentContact?.name || '---'}
           </h2>
-          <div className="mt-8 px-6 py-2 bg-black/20 rounded-full">
-            <span className="text-xs font-black text-white uppercase tracking-widest">
+          <div className="mt-4 sm:mt-8 px-5 py-1.5 bg-black/20 rounded-full">
+            <span className="text-[10px] font-black text-white uppercase tracking-widest">
               {isStaged ? 'Bevestig Bellen' : 'Druk om te bellen'}
             </span>
           </div>
         </button>
       </div>
-      <div className="mt-12 text-center opacity-30">
-        <p className="text-[10px] font-black uppercase tracking-[0.5em]">{status}</p>
+      <div className="mt-6 sm:mt-12 text-center opacity-30">
+        <p className="text-[9px] font-black uppercase tracking-[0.5em]">{status}</p>
       </div>
     </div>
   );

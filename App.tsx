@@ -39,7 +39,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-blue-500/30">
-      <div className="max-w-4xl mx-auto px-6 py-10 space-y-12">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-4 sm:py-10 space-y-6 sm:space-y-12">
         
         <CompactDashboard 
           onSettingsClick={() => setCurrentSection(s => s === AppSection.SETTINGS ? AppSection.DIALER : AppSection.SETTINGS)} 
@@ -52,7 +52,7 @@ const App: React.FC = () => {
             onBack={() => setCurrentSection(AppSection.DIALER)} 
           />
         ) : (
-          <div className="space-y-16">
+          <div className="space-y-8 sm:space-y-16">
             <VoiceController 
               contacts={contacts} 
               currentIndex={currentIndex}
@@ -60,11 +60,11 @@ const App: React.FC = () => {
               onCallComplete={markAsCalled}
             />
 
-            <div className="pt-10 border-t border-white/5">
-              <div className="flex justify-between items-center mb-8">
-                <h3 className="text-[10px] font-black uppercase tracking-[0.5em] text-white/30">Wachtrij</h3>
-                <div className="h-px flex-1 mx-6 bg-white/5"></div>
-                <span className="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-4 py-1.5 rounded-full uppercase tracking-widest border border-blue-500/20">
+            <div className="pt-6 sm:pt-10 border-t border-white/5">
+              <div className="flex justify-between items-center mb-4 sm:mb-8">
+                <h3 className="text-[9px] sm:text-[10px] font-black uppercase tracking-[0.5em] text-white/30">Wachtrij</h3>
+                <div className="h-px flex-1 mx-4 sm:mx-6 bg-white/5"></div>
+                <span className="text-[9px] sm:text-[10px] font-bold text-blue-400 bg-blue-500/10 px-3 py-1 rounded-full uppercase tracking-widest border border-blue-500/20">
                   {Math.max(0, contacts.length - (currentIndex + 1))} Resterend
                 </span>
               </div>
