@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type } from '@google/genai';
 import { Contact } from '../types';
 
@@ -29,10 +29,29 @@ function decode(base64: string) {
   return bytes;
 }
 
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
 const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentIndex, setCurrentIndex, onCallComplete }) => {
   const [isActive, setIsActive] = useState(false);
-  const [status, setStatus] = useState('Klaar voor start');
   const [volume, setVolume] = useState(0);
+  const [transcript, setTranscript] = useState('');
+  const [aiTranscript, setAiTranscript] = useState('');
   
   const inputAudioCtxRef = useRef<AudioContext | null>(null);
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
@@ -60,19 +79,16 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     
     setIsActive(false);
     setVolume(0);
-    setStatus('Assistent uit');
+    setTranscript('');
+    setAiTranscript('');
   }, []);
 
   const makeCall = useCallback(() => {
     if (!currentContact) return "Geen contact.";
     const phone = currentContact.phone.replace(/\s+/g, '');
-    setStatus(`Bellen...`);
-    // We stoppen de audio even zodat de telefoon-app de mic kan overnemen
-    setTimeout(() => {
-      window.location.href = `tel:${phone}`;
-    }, 500);
+    window.location.href = `tel:${phone}`;
     onCallComplete(currentContact.id);
-    return `Ik verbind u met ${currentContact.name}.`;
+    return "Ik start de oproep.";
   }, [currentContact, onCallComplete]);
 
   const findContactByName = useCallback((name: string) => {
@@ -82,24 +98,17 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     );
     if (foundIdx !== -1) {
       setCurrentIndex(foundIdx);
-      return `Gevonden: ${contacts[foundIdx].name} van ${contacts[foundIdx].relation}. Zal ik bellen?`;
+      return `Gevonden: ${contacts[foundIdx].name}. Bellen?`;
     }
-    return `Ik kan ${name} niet vinden in de lijst.`;
+    return "Niet gevonden.";
   }, [contacts, setCurrentIndex]);
 
   const startVoiceSession = async () => {
     if (isActive) { stopVoiceSession(); return; }
     
     try {
-      setStatus('Microfoon laden...');
-      // Optimalisatie voor auto: echo cancellation en noise suppression aan
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 16000
-        } 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
       });
       streamRef.current = stream;
 
@@ -113,9 +122,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       await outputCtx.resume();
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      
       const contactData = contacts.map((c, i) => 
-        `ID ${i + 1}: ${c.name} | Bedrijf: ${c.relation} | Taak: ${c.subject} | Tel: ${c.phone}`
+        `ID:${i+1} | ${c.name} | Bedrijf:${c.relation} | Taak:${c.subject} | Tel:${c.phone}`
       ).join('\n');
 
       const sessionPromise = ai.live.connect({
@@ -123,13 +131,11 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         callbacks: {
           onopen: () => {
             setIsActive(true);
-            setStatus('Ik luister...');
-            
             const source = inputCtx.createMediaStreamSource(stream);
             const processor = inputCtx.createScriptProcessor(2048, 1, 1);
             
             const analyser = inputCtx.createAnalyser();
-            analyser.fftSize = 32;
+            analyser.fftSize = 64;
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
             source.connect(analyser);
 
@@ -144,128 +150,115 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             updateVolume();
 
             processor.onaudioprocess = (e) => {
-              sessionPromise.then(s => {
-                if (!streamRef.current) return;
-                const inputData = e.inputBuffer.getChannelData(0);
-                const int16 = new Int16Array(inputData.length);
-                for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
-                s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } });
-              });
+              if (!sessionRef.current) return;
+              const inputData = e.inputBuffer.getChannelData(0);
+              const int16 = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
+              sessionRef.current.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } });
             };
             source.connect(processor);
             processor.connect(inputCtx.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
-            const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (base64Audio && outputAudioCtxRef.current) {
-              const audioBytes = decode(base64Audio);
-              const dataInt16 = new Int16Array(audioBytes.buffer);
-              const buffer = outputAudioCtxRef.current.createBuffer(1, dataInt16.length, 24000);
-              const channelData = buffer.getChannelData(0);
-              for (let i = 0; i < dataInt16.length; i++) channelData[i] = dataInt16[i] / 32768.0;
-              const source = outputAudioCtxRef.current.createBufferSource();
-              source.buffer = buffer;
-              source.connect(outputAudioCtxRef.current.destination);
-              const startTime = Math.max(nextStartTimeRef.current, outputAudioCtxRef.current.currentTime);
-              source.start(startTime);
-              nextStartTimeRef.current = startTime + buffer.duration;
-              sourcesRef.current.add(source);
-              setStatus('AI antwoordt...');
+            if (msg.serverContent?.inputTranscription) setTranscript(msg.serverContent.inputTranscription.text);
+            if (msg.serverContent?.outputTranscription) setAiTranscript(msg.serverContent.outputTranscription.text);
+            
+            const parts = msg.serverContent?.modelTurn?.parts;
+            if (parts && outputAudioCtxRef.current) {
+              for (const part of parts) {
+                if (part.inlineData?.data) {
+                  const audioBuffer = await decodeAudioData(decode(part.inlineData.data), outputAudioCtxRef.current, 24000, 1);
+                  const source = outputAudioCtxRef.current.createBufferSource();
+                  source.buffer = audioBuffer;
+                  source.connect(outputAudioCtxRef.current.destination);
+                  const startTime = Math.max(nextStartTimeRef.current, outputAudioCtxRef.current.currentTime);
+                  source.start(startTime);
+                  nextStartTimeRef.current = startTime + audioBuffer.duration;
+                  sourcesRef.current.add(source);
+                }
+              }
             }
 
             if (msg.toolCall?.functionCalls) {
               for (const fc of msg.toolCall.functionCalls) {
-                let res = "";
-                if (fc.name === 'makeCall') res = makeCall();
-                if (fc.name === 'findContactByName') res = findContactByName((fc.args as any)?.name || "");
-                sessionPromise.then(s => s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: res } } }));
+                let res = fc.name === 'makeCall' ? makeCall() : findContactByName((fc.args as any)?.name || "");
+                sessionRef.current?.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: res } } });
               }
             }
-            if (msg.serverContent?.turnComplete) setStatus('Ik luister...');
+
+            if (msg.serverContent?.interrupted) {
+               sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+               sourcesRef.current.clear();
+               nextStartTimeRef.current = 0;
+            }
           },
-          onerror: (e) => { setStatus('Verbinding fout'); stopVoiceSession(); }
+          onerror: () => stopVoiceSession(),
+          onclose: () => setIsActive(false)
         },
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { voiceName: 'Puck' } as any },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
           tools: [{ functionDeclarations: [
-            { name: 'makeCall', description: 'Start het bellen.', parameters: { type: Type.OBJECT, properties: {} } },
-            { name: 'findContactByName', description: 'Zoek contact in lijst.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
+            { name: 'makeCall', description: 'Bel het contact.', parameters: { type: Type.OBJECT, properties: {} } },
+            { name: 'findContactByName', description: 'Zoek op naam.', parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ['name'] } }
           ]}] as any,
-          systemInstruction: `Je bent DriveDialer, een assistent voor chauffeurs. 
-          
-          DATASET:
-          ${contactData}
-          
-          CRUCIALE REGELS:
-          1. De kolom 'Bedrijf' in de dataset hierboven IS de 'Relatie' uit de spreadsheet. Noem deze ALTIJD.
-          2. Als de gebruiker vraagt wie hij moet bellen, noem dan: Naam, Relatie (Bedrijf), Taak en Telefoonnummer.
-          3. Wees zeer kortaf. Gebruik maximaal 15 woorden per antwoord.
-          4. Bij commando 'bel' of 'start gesprek', gebruik de tool 'makeCall'.
-          5. Spreek uitsluitend Nederlands.`
+          systemInstruction: `Je bent DriveDialer. 
+          DATA: ${contactData}. 
+          REGELS: 
+          1. Zeg ONMIDDELLIJK 'Systeem online' bij start.
+          2. Noem bij vragen Naam en Bedrijf (Relatie). 
+          3. Gebruik 'makeCall' om te bellen. 
+          4. Wees extreem kortaf. Nederlands.`
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (e: any) { 
-      setStatus('Fout: ' + e.message);
       setIsActive(false); 
     }
   };
 
   return (
-    <div className="w-full space-y-6">
-      <div className="flex flex-col items-center">
+    <div className="w-full flex flex-col items-center space-y-8">
+      <div className="relative">
+        {/* Pulsing visualizer background */}
+        {isActive && (
+          <div 
+            className="absolute inset-0 rounded-full bg-blue-600/20 blur-xl transition-all duration-75 scale-150"
+            style={{ opacity: volume / 100 }}
+          />
+        )}
+        
         <button 
           onClick={startVoiceSession} 
-          className={`relative w-64 h-64 rounded-full flex flex-col items-center justify-center transition-all active:scale-90 border-[12px] ${
-            isActive ? 'bg-blue-600 border-white shadow-[0_0_80px_rgba(37,99,235,0.4)]' : 'bg-slate-900 border-slate-800 shadow-xl'
+          className={`relative w-56 h-56 rounded-full flex flex-col items-center justify-center transition-all active:scale-90 border-[10px] ${
+            isActive ? 'bg-blue-600 border-white shadow-2xl' : 'bg-slate-900 border-slate-800'
           }`}
         >
-          {/* Audio Wave Effect */}
-          {isActive && (
-            <div 
-              className="absolute inset-0 rounded-full border-4 border-blue-400 opacity-20 animate-ping"
-              style={{ animationDuration: '2s' }}
-            />
-          )}
-
-          <div className={`w-24 h-24 rounded-full mb-4 flex items-center justify-center transition-transform ${isActive ? 'scale-110 bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
-            {isActive ? (
-               <div className="flex items-end gap-1 h-8">
-                 <div className="w-2 bg-current rounded-full transition-all" style={{ height: `${20 + (volume * 0.8)}%` }}></div>
-                 <div className="w-2 bg-current rounded-full transition-all" style={{ height: `${40 + (volume * 0.4)}%` }}></div>
-                 <div className="w-2 bg-current rounded-full transition-all" style={{ height: `${10 + (volume * 1.2)}%` }}></div>
-               </div>
-            ) : (
-              <svg className="w-12 h-12" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-            )}
+          <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-3 ${isActive ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'}`}>
+            <svg className="w-10 h-10" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
           </div>
-          <span className="text-white font-black text-3xl uppercase tracking-tighter">{isActive ? 'STOP' : 'START'}</span>
-          <p className={`mt-2 text-[10px] font-bold uppercase tracking-widest ${isActive ? 'text-blue-200' : 'text-slate-500'}`}>{status}</p>
+          <span className="text-white font-black text-2xl tracking-tighter">{isActive ? 'STOP' : 'START'}</span>
         </button>
       </div>
 
+      {/* Transcriptie feedback */}
+      <div className="h-12 flex flex-col items-center justify-center px-6">
+        {isActive && (
+          <div className="text-center">
+            {transcript && <p className="text-[10px] text-white/40 uppercase font-bold tracking-widest">{transcript}</p>}
+            {aiTranscript && <p className="text-lg text-blue-400 font-black uppercase mt-1 leading-none">{aiTranscript}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Simple Contact Name Display */}
       {currentContact && (
-        <div className="bg-slate-900/50 border border-white/10 rounded-[40px] p-8 shadow-2xl backdrop-blur-md">
-          <div className="text-center space-y-2">
-            <span className="inline-block px-4 py-1 bg-blue-500/10 text-blue-400 rounded-full text-[10px] font-black uppercase tracking-[0.2em] border border-blue-500/20">Nu Actief</span>
-            <h2 className="text-4xl font-black text-white uppercase tracking-tight leading-none pt-2">{currentContact.name}</h2>
-            <div className="flex items-center justify-center gap-2">
-               <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest">RELATIE:</span>
-               <p className="text-lg font-bold text-white/70 uppercase">{currentContact.relation}</p>
-            </div>
-          </div>
-          
-          <div className="mt-8 grid grid-cols-2 gap-4">
-            <div className="bg-black/40 p-5 rounded-3xl border border-white/5">
-              <span className="text-[8px] font-black text-slate-500 uppercase block mb-1">Taak</span>
-              <p className="text-xs font-bold text-white line-clamp-2">{currentContact.subject}</p>
-            </div>
-            <div className="bg-black/40 p-5 rounded-3xl border border-white/5">
-              <span className="text-[8px] font-black text-slate-500 uppercase block mb-1">Telefoon</span>
-              <p className="text-xs font-bold text-blue-400 font-mono">{currentContact.phone}</p>
-            </div>
-          </div>
+        <div className="text-center pt-4">
+          <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.4em] mb-2">Huidige Selectie</p>
+          <h2 className="text-5xl font-black text-white uppercase tracking-tighter leading-none">{currentContact.name}</h2>
+          <p className="text-xl font-bold text-white/20 uppercase mt-2 tracking-widest">{currentContact.relation}</p>
         </div>
       )}
     </div>
