@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type } from '@google/genai';
 import { Contact } from '../types';
 
@@ -27,6 +27,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   const [isActive, setIsActive] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDialing, setIsDialing] = useState(false);
+  const [pendingPhone, setPendingPhone] = useState<string | null>(null);
+  
   const currentContact = contacts[currentIndex];
 
   const sessionRef = useRef<any>(null);
@@ -56,7 +58,22 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     setIsActive(false);
     setIsConnecting(false);
     setIsDialing(false);
+    setPendingPhone(null);
   }, []);
+
+  // De daadwerkelijke bel-functie
+  const executeDial = useCallback((phone: string, id: string) => {
+    const cleanPhone = phone.replace(/[^0-9+]/g, '');
+    
+    // Probeer direct te bellen
+    window.location.assign(`tel:${cleanPhone}`);
+    
+    // Update de lijst status
+    setTimeout(() => {
+      onCallComplete(id);
+      cleanup();
+    }, 1500);
+  }, [onCallComplete, cleanup]);
 
   const handleDial = useCallback((index?: number) => {
     const targetIdx = (typeof index === 'number' && index > 0) ? index - 1 : currentIndex;
@@ -65,23 +82,12 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     if (!contact) return;
     
     setIsDialing(true);
-    const phone = contact.phone.replace(/[^0-9+]/g, '');
-    const id = contact.id;
+    setPendingPhone(contact.phone);
     
-    // Gebruik een onzichtbare link voor betere browser-compatibiliteit
-    const link = document.createElement('a');
-    link.href = `tel:${phone}`;
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    
-    // Geef de gebruiker en browser tijd om de overgang te maken
-    setTimeout(() => {
-      document.body.removeChild(link);
-      onCallComplete(id);
-      cleanup();
-    }, 2000);
-  }, [currentIndex, contacts, cleanup, onCallComplete]);
+    // Op sommige browsers werkt dit direct, op andere is een klik nodig.
+    // We proberen het direct, en tonen anders een grote knop.
+    executeDial(contact.phone, contact.id);
+  }, [currentIndex, contacts, executeDial]);
 
   const handleGoto = useCallback((index: number) => {
     const targetIdx = index - 1;
@@ -107,9 +113,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       audioInRef.current = inCtx;
       audioOutRef.current = outCtx;
 
-      // Uitgebreide context voor de AI
       const detailedList = contacts.map((c, i) => 
-        `Item ${i + 1}: Naam: ${c.name}, Organisatie/Relatie: ${c.relation}, Onderwerp: ${c.subject}, Telefoon: ${c.phone}`
+        `Item ${i + 1}: Naam: ${c.name}, Organisatie: ${c.relation}, Onderwerp: ${c.subject}, Telefoon: ${c.phone}`
       ).join('\n');
 
       const sessionPromise = ai.live.connect({
@@ -171,33 +176,36 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           tools: [{ functionDeclarations: [
             { 
               name: 'dial', 
-              description: 'Start de telefoon-app om te bellen.', 
-              parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER, description: 'Index van contact' } } } 
+              description: 'Activeer de dialer om de persoon te bellen.', 
+              parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } } } 
             },
             { 
               name: 'goto', 
-              description: 'Focus op een specifiek contact op het scherm.', 
+              description: 'Verspring op het scherm naar een specifiek item.', 
               parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } 
             },
             { 
               name: 'skip', 
-              description: 'Ga naar het volgende contact.', 
+              description: 'Sla deze persoon over.', 
               parameters: { type: Type.OBJECT, properties: {} } 
             }
           ]}] as any,
-          systemInstruction: `Je bent een proactieve rij-assistent. Je hebt de volledige spreadsheet in je geheugen:
+          systemInstruction: `Je bent de intelligente DriveDialer assistent. Je hebt volledige toegang tot deze spreadsheet:
 
-          DATA:
+          CONTACTENLIJST:
           ${detailedList}
 
           HUIDIGE FOCUS: Item #${currentIndex + 1} (${currentContact?.name}).
 
-          INSTRUCTIES VOOR INTERACTIE:
-          1. Als de gebruiker vraagt: "Bij welk bedrijf werkt hij?", "Wat is het onderwerp?", of "Wie is nummer 5?", zoek dan de informatie op in de DATA hierboven en vertel het uitgebreid. Gebruik 'goto' als ze naar een ander nummer vragen.
-          2. Voordat je de 'dial' tool gebruikt, zeg je ALTIJD eerst: "Ik ga [Naam] nu voor je bellen."
-          3. Je MOET alle vragen over de spreadsheet beantwoorden. De gebruiker kan alles vragen over relaties en onderwerpen.
-          4. Als de gebruiker "bellen", "graag bellen" of "ja" zegt, gebruik dan de 'dial' tool.
-          5. Wees kort maar informatief. Spreek uitsluitend Nederlands.`
+          COMMANDO'S EN GEDRAG:
+          1. VOORLEZEN: Als de gebruiker vraagt om een taak voor te lezen (bijv. "Lees taak 1 voor" of "Wie is de volgende?"):
+             - Gebruik 'goto' om het item op het scherm te tonen.
+             - Lees ALTIJD voor: "[Naam] van [Organisatie], te bespreken: [Onderwerp]".
+             - Vraag daarna pas: "Zal ik deze persoon bellen?"
+          2. DETAILS: De gebruiker kan vragen stellen over organisaties of onderwerpen. Gebruik de lijst hierboven om antwoord te geven.
+          3. BELLEN: Gebruik de 'dial' tool ALLEEN als de gebruiker expliciet bevestigt (bijv. "Ja", "Bellen", "Doe maar").
+          4. FEEDBACK: Zeg altijd "Ik ga [Naam] nu voor je bellen" voordat je de dialer activeert.
+          5. TAAL: Spreek uitsluitend Nederlands en wees beknopt.`
         }
       });
       sessionRef.current = await sessionPromise;
@@ -208,26 +216,54 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-4">
+    <div className="flex-1 flex flex-col items-center justify-center p-4 relative">
       
-      <div className="mb-20 text-center animate-in fade-in slide-in-from-bottom-4 duration-700">
+      {/* Dialer Overlay voor het geval de automatische pop-up wordt geblokkeerd */}
+      {isDialing && pendingPhone && (
+        <div className="absolute inset-0 z-50 bg-blue-600 flex flex-col items-center justify-center p-8 animate-in fade-in zoom-in duration-300">
+           <h2 className="text-white text-center font-black text-4xl uppercase tracking-tighter mb-8">
+             Tik hier om te bellen
+           </h2>
+           <button 
+             onClick={() => executeDial(pendingPhone, currentContact.id)}
+             className="w-full aspect-square bg-white rounded-full flex items-center justify-center shadow-2xl active:scale-90 transition-transform"
+           >
+             <div className="text-blue-600 font-black text-2xl tracking-widest uppercase">BEL NU</div>
+           </button>
+           <button 
+             onClick={() => setIsDialing(false)} 
+             className="mt-12 text-white/50 font-bold uppercase tracking-widest text-[10px]"
+           >
+             Annuleren
+           </button>
+        </div>
+      )}
+
+      {/* Info Sectie */}
+      <div className="mb-20 text-center">
         <div className="inline-block px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full mb-4">
           <span className="text-blue-500 font-black text-[10px] tracking-[0.3em] uppercase">
-             {isDialing ? 'Verbinding maken...' : `Contact ${currentIndex + 1} van ${contacts.length}`}
+             Taak {currentIndex + 1} van {contacts.length}
           </span>
         </div>
-        <h2 className={`text-4xl font-black text-white tracking-tighter uppercase mb-2 transition-all ${isDialing ? 'scale-110 text-blue-500' : ''}`}>
+        <h2 className="text-4xl font-black text-white tracking-tighter uppercase mb-2">
           {currentContact?.name || "Klaar"}
         </h2>
-        <p className="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em]">
-          {isDialing ? 'Telefoon wordt geopend' : currentContact?.relation}
-        </p>
+        <div className="flex flex-col gap-1">
+          <p className="text-blue-400 text-[11px] font-black uppercase tracking-[0.1em]">
+            {currentContact?.relation}
+          </p>
+          <p className="text-white/30 text-[10px] font-medium italic">
+            "{currentContact?.subject}"
+          </p>
+        </div>
       </div>
 
+      {/* Grote Start/Stop Knop */}
       <button 
         onClick={toggleSession}
         disabled={isConnecting || isDialing}
-        className={`relative w-full max-w-xs aspect-video rounded-[50px] font-black text-5xl tracking-[0.1em] transition-all flex items-center justify-center overflow-hidden shadow-2xl active:scale-95 ${
+        className={`relative w-full max-w-xs aspect-video rounded-[60px] font-black text-5xl tracking-[0.1em] transition-all flex items-center justify-center overflow-hidden shadow-2xl active:scale-95 ${
           isActive 
             ? 'bg-red-600 shadow-red-900/40' 
             : 'bg-blue-600 shadow-blue-900/40'
@@ -237,13 +273,14 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           <div className="absolute inset-0 bg-white/10 animate-pulse"></div>
         )}
         <span className="relative z-10">
-          {isConnecting ? '...' : isDialing ? 'BEL' : isActive ? 'STOP' : 'START'}
+          {isConnecting ? '...' : isActive ? 'STOP' : 'START'}
         </span>
       </button>
 
+      {/* Visualizer */}
       <div className="mt-16 h-12 flex items-center justify-center gap-2">
-        {isActive && !isDialing ? (
-          [0.4, 0.7, 0.3, 0.9, 0.5, 0.8, 0.4].map((h, i) => (
+        {isActive ? (
+          [0.3, 0.8, 0.5, 1.0, 0.4, 0.7, 0.4].map((h, i) => (
             <div 
               key={i}
               className="w-1.5 bg-blue-500 rounded-full animate-wave" 
@@ -251,17 +288,17 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             ></div>
           ))
         ) : (
-          <div className={`h-[2px] bg-white/10 transition-all duration-1000 ${isActive ? 'w-40' : 'w-20 opacity-0'}`}></div>
+          <div className="h-[2px] w-20 bg-white/5"></div>
         )}
       </div>
 
       <style>{`
         @keyframes wave {
           0%, 100% { transform: scaleY(0.4); opacity: 0.5; }
-          50% { transform: scaleY(1.4); opacity: 1; }
+          50% { transform: scaleY(1.5); opacity: 1; }
         }
         .animate-wave {
-          animation: wave 0.8s ease-in-out infinite;
+          animation: wave 0.7s ease-in-out infinite;
         }
       `}</style>
 
