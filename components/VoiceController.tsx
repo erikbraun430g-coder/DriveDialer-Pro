@@ -10,12 +10,14 @@ interface VoiceControllerProps {
   onCallComplete: (id: string) => void;
 }
 
+// Manual base64 encoding as per @google/genai guidelines
 const encode = (bytes: Uint8Array) => {
   let b = '';
   for (let i = 0; i < bytes.byteLength; i++) b += String.fromCharCode(bytes[i]);
   return btoa(b);
 };
 
+// Manual base64 decoding as per @google/genai guidelines
 const decode = (base64: string) => {
   const s = atob(base64);
   const b = new Uint8Array(s.length);
@@ -80,7 +82,14 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       audioInRef.current = inCtx;
       audioOutRef.current = outCtx;
 
-      const listPrompt = contacts.map((c, i) => `Taak ${i + 1}: ${c.name}, ${c.relation}. Onderwerp: ${c.subject}`).join('\n');
+      // Bouw een zeer expliciete lijst voor de AI om verwarring te voorkomen
+      const contextPrompt = contacts.map((c, i) => 
+        `IDENTIFICATIE: Taak ${i + 1}
+         PERSOON: ${c.name}
+         BEDRIJF: ${c.relation}
+         REDEN_VOOR_GESPREK: ${c.subject}
+         TELEFOONNUMMER: ${c.phone}`
+      ).join('\n---\n');
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -91,12 +100,15 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             const source = inCtx.createMediaStreamSource(stream);
             const processor = inCtx.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
-              if (!sessionRef.current) return;
+              // CRITICAL: Solely rely on sessionPromise resolves and then call `session.sendRealtimeInput`
               const input = e.inputBuffer.getChannelData(0);
               const pcm = new Int16Array(input.length);
               for (let i = 0; i < input.length; i++) pcm[i] = input[i] * 32768;
-              sessionRef.current.sendRealtimeInput({
-                media: { data: encode(new Uint8Array(pcm.buffer)), mimeType: 'audio/pcm;rate=16000' }
+              const encodedData = encode(new Uint8Array(pcm.buffer));
+              sessionPromise.then((session) => {
+                session.sendRealtimeInput({
+                  media: { data: encodedData, mimeType: 'audio/pcm;rate=16000' }
+                });
               });
             };
             source.connect(processor);
@@ -120,48 +132,66 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
             if (msg.toolCall?.functionCalls) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'goto_item' && fc.args) {
+                if (!fc.args) continue; 
+                
+                if (fc.name === 'goto_item') {
                   const idx = (fc.args.index as number) - 1;
                   if (idx >= 0 && idx < contacts.length) {
                     setCurrentIndex(idx);
                   }
                 }
                 if (fc.name === 'trigger_call') {
-                  // CRITICAL: Stop AI direct om microfoon hardware vrij te geven voor het telefoongesprek
+                  // STOP DIRECT OM MIC VRIJ TE GEVEN VOOR TELEFOON
                   await cleanup();
                   setAwaitingDial(true);
                 }
-                sessionRef.current?.sendToolResponse({
-                  functionResponses: { id: fc.id, name: fc.name, response: { result: "ok" } }
+                // Use sessionPromise.then for tool responses as per guidelines
+                sessionPromise.then((session) => {
+                  session.sendToolResponse({
+                    functionResponses: { id: fc.id, name: fc.name, response: { result: "ok" } }
+                  });
                 });
               }
             }
           },
-          onerror: () => cleanup(),
+          onerror: (e) => {
+            console.error("Session Error:", e);
+            cleanup();
+          },
           onclose: () => cleanup()
         },
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
           tools: [{ functionDeclarations: [
-            { name: 'goto_item', description: 'Focus de app op een specifiek taaknummer.', parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } },
-            { name: 'trigger_call', description: 'Beëindig AI sessie en toon de bel-knop.', parameters: { type: Type.OBJECT, properties: {} } }
+            { 
+              name: 'goto_item', 
+              description: 'Focus de app op een specifiek taaknummer.',
+              parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } 
+            },
+            { 
+              name: 'trigger_call', 
+              description: 'Start het belproces en geef de microfoon vrij.',
+              parameters: { type: Type.OBJECT, properties: {} } 
+            }
           ]}] as any,
           systemInstruction: `Je bent de DriveDialer Assistent. 
           
-          JE LIJST:
-          ${listPrompt}
+          JE DATABASE MET TAKEN:
+          ${contextPrompt}
 
-          INSTRUCTIES:
-          1. Als de gebruiker vraagt naar een taak of persoon, gebruik 'goto_item' en zeg DIRECT: "[Naam], [Bedrijf]. Het onderwerp is [Onderwerp]."
-          2. Wees extreem kort. Geen "Hallo" of "Hoe kan ik helpen".
-          3. Gebruik 'trigger_call' ENKEL als de gebruiker zegt "bel hem", "bel haar" of "bel dit nummer".
-          4. Noem nooit telefoonnummers hardop.`
+          STRIKTE WERKWIJZE:
+          1. Als de gebruiker vraagt naar een taak of contact:
+             - Gebruik 'goto_item' met het juiste indexnummer.
+             - Zeg daarna DIRECT: "[NAAM] van [BEDRIJF]. De reden voor dit gesprek is: [REDEN_VOOR_GESPREK]."
+          2. Zeg NOOIT telefoonnummers.
+          3. Gebruik 'trigger_call' enkel als de gebruiker zegt "bel hem", "bel haar" of "bel dit nummer".
+          4. Wees extreem kortaf. Geen beleefdheden.`
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (e) {
-      console.error(e);
+      console.error("Initialisatie fout:", e);
       await cleanup();
     }
   };
@@ -171,40 +201,30 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
       
-      {/* Rij-Veilige Interface: Alleen de Naam en Bedrijf */}
-      <div className="mb-16 text-center w-full animate-in fade-in zoom-in-95 duration-700" key={currentIndex}>
-        <div className="inline-block px-5 py-2 bg-blue-500/10 border border-blue-500/20 rounded-full mb-8">
-          <span className="text-blue-500 font-black text-xs tracking-[0.4em] uppercase">
-             TAAK {currentIndex + 1} / {contacts.length}
-          </span>
-        </div>
-        
-        <h2 className="text-6xl sm:text-7xl font-black text-white tracking-tighter uppercase mb-4 leading-none">
+      {/* Driving Focus UI: Alleen de Naam */}
+      <div className="mb-24 text-center w-full animate-in fade-in zoom-in-95 duration-700" key={currentIndex}>
+        <h2 className="text-7xl sm:text-9xl font-black text-white tracking-tighter uppercase leading-none break-words">
           {currentContact?.name}
         </h2>
-        
-        <p className="text-blue-400 font-black uppercase tracking-[0.3em] text-lg">
-          {currentContact?.relation}
-        </p>
       </div>
 
       <div className="w-full max-w-sm">
         {awaitingDial ? (
-          <div className="space-y-6 animate-in slide-in-from-bottom-10 duration-500">
+          <div className="space-y-6 animate-in slide-in-from-bottom-12 duration-500">
             <a 
               href={`tel:${cleanPhone}`}
               onClick={() => {
                 onCallComplete(currentContact.id);
                 setAwaitingDial(false);
               }}
-              className="w-full h-48 rounded-[60px] bg-green-500 text-black font-black flex flex-col items-center justify-center no-underline shadow-[0_0_100px_rgba(34,197,94,0.5)] active:scale-95 transition-all"
+              className="w-full h-64 rounded-[100px] bg-green-500 text-black font-black flex flex-col items-center justify-center no-underline shadow-[0_0_150px_rgba(34,197,94,0.3)] active:scale-95 transition-all"
             >
-              <span className="text-6xl mb-2">📞</span>
-              <span className="text-xs uppercase tracking-[0.5em] opacity-60">Tik om te bellen</span>
+              <span className="text-9xl mb-4">📞</span>
+              <span className="text-xs uppercase tracking-[0.5em] font-black opacity-60">BEL {currentContact?.name}</span>
             </a>
             <button 
               onClick={() => setAwaitingDial(false)} 
-              className="w-full py-6 text-white/20 text-xs uppercase font-black tracking-[0.3em]"
+              className="w-full py-4 text-white/20 text-[10px] uppercase font-black tracking-[0.4em]"
             >
               Annuleren
             </button>
@@ -213,7 +233,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           <button 
             onClick={toggleSession}
             disabled={isConnecting}
-            className={`w-full h-48 rounded-[60px] font-black text-4xl tracking-tighter shadow-2xl transition-all duration-500 active:scale-90 border-4 ${
+            className={`w-full h-64 rounded-[100px] font-black text-6xl tracking-tighter shadow-2xl transition-all duration-500 active:scale-90 border-4 ${
               isActive 
                 ? 'bg-red-600 border-red-500 text-white animate-pulse' 
                 : 'bg-blue-600 border-blue-500 text-white'
@@ -224,14 +244,15 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         )}
       </div>
 
-      {/* Mic Status Visualizer (alleen als AI luistert) */}
-      <div className="absolute bottom-12 left-0 right-0 flex justify-center items-center gap-2 h-12">
+      {/* Mic Animatie onderaan */}
+      <div className="absolute bottom-16 left-0 right-0 flex justify-center items-center gap-3 h-12 pointer-events-none">
         {isActive && !awaitingDial ? (
-          [0.3, 0.7, 1.0, 0.5, 0.8].map((h, i) => (
+          [0.3, 0.6, 1.0, 0.5, 0.8].map((h, i) => (
             <div 
               key={i} 
-              className="w-2 bg-blue-500 rounded-full animate-wave" 
-              style={{ height: `${h * 100}%`, animationDelay: `${i*0.1}s` }}
+              className="w-3 bg-blue-500 rounded-full animate-wave" 
+              // Fix: Added space before 's' unit for correct interpretation of variable in template literal
+              style={{ height: `${h * 100}%`, animationDelay: `${i * 0.1}s` }}
             ></div>
           ))
         ) : (
@@ -239,13 +260,14 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         )}
       </div>
 
-      <style>{`
+      {/* Fix: Using dangerouslySetInnerHTML for raw CSS to prevent JSX/TS parsing errors of the string content */}
+      <style dangerouslySetInnerHTML={{ __html: `
         @keyframes wave {
-          0%, 100% { transform: scaleY(0.5); opacity: 0.3; }
-          50% { transform: scaleY(1.4); opacity: 1; }
+          0%, 100% { transform: scaleY(0.4); opacity: 0.1; }
+          50% { transform: scaleY(1.6); opacity: 1; }
         }
-        .animate-wave { animation: wave 0.5s ease-in-out infinite; }
-      `}</style>
+        .animate-wave { animation: wave 0.4s ease-in-out infinite; }
+      ` }} />
     </div>
   );
 };
