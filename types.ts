@@ -5,7 +5,7 @@ export interface Contact {
   relation: string;
   subject: string;
   phone: string;
-  status: 'pending' | 'called' | 'skipped';
+  status: 'pending' | 'called';
 }
 
 export enum AppSection {
