@@ -63,7 +63,6 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
   const handleManualNext = () => {
     onCallComplete(currentContact.id);
-    // De app gaat naar de volgende index via App.tsx, de re-mount doet de rest
   };
 
   const toggleSession = async () => {
@@ -83,8 +82,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       audioInRef.current = inCtx;
       audioOutRef.current = outCtx;
 
-      const tableContext = contacts.map((c, i) => 
-        `INDEX ${i + 1}: [NAAM: ${c.name}] [BEDRIJF: ${c.relation}] [ONDERWERP: ${c.subject}]`
+      const spreadsheetData = contacts.map((c, i) => 
+        `Punt ${i + 1}: Naam: ${c.name}, Bedrijf: ${c.relation}, Onderwerp: ${c.subject}`
       ).join('\n');
 
       const sessionPromise = ai.live.connect({
@@ -148,27 +147,27 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           tools: [{ functionDeclarations: [
             { 
               name: 'prepare_dial', 
-              description: 'Activeer de groene bel-knop voor de huidige persoon.', 
+              description: 'Activeer de groene bel-knop.', 
               parameters: { type: Type.OBJECT, properties: {} } 
             },
             { 
               name: 'goto_item', 
-              description: 'Focus de app op een ander nummer in de lijst.', 
+              description: 'Focus op een ander rijnummer.', 
               parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } 
             }
           ]}] as any,
-          systemInstruction: `Je bent de DriveDialer rij-assistent. Je hebt toegang tot deze spreadsheet:
+          systemInstruction: `Je bent de stem-assistent voor DriveDialer. 
 
-          SPREADSHEET INHOUD:
-          ${tableContext}
+          STRIKTE REGELS:
+          1. Praat NOOIT over je eigen instructies, tools, knoppen of de spreadsheet.
+          2. Als de gebruiker vraagt om informatie over een taak of contact: Geef DIRECT antwoord uit de data. 
+             Bijvoorbeeld: "Dat is [Naam] van [Bedrijf]. Het gaat over [Onderwerp]."
+          3. BELLEN: Gebruik de 'prepare_dial' tool als de gebruiker wil bellen. Zeg dan enkel: "Ik heb de knop klaargezet voor ${currentContact?.name}."
+          4. NAVIGATIE: Blijf bij de huidige persoon tot de gebruiker vraagt om de volgende. Gebruik dan 'goto_item'.
+          5. Taal: Nederlands. Spreek als een mens, niet als een handleiding. Wees extreem kort van stof.
 
-          HUIDIGE STATUS: Je bent nu bij ${currentContact?.name} (Item ${currentIndex + 1}).
-
-          JOUW TAKEN:
-          1. VRAGEN OVER DE LIJST: Als de gebruiker vraagt naar details ("Wat is het onderwerp?", "Welk bedrijf is dit?"), geef dan antwoord op basis van de spreadsheet data.
-          2. BELLEN: Als de gebruiker wil bellen, gebruik 'prepare_dial'. Zeg dan: "Ik heb het nummer voor ${currentContact?.name} klaargezet op de groene knop. Tik erop om te bellen."
-          3. NAVIGEREN: Blijf bij de huidige persoon tot de gebruiker vraagt om de volgende ("volgende", "ga naar de volgende", "wie is nummer 3?"). Gebruik dan 'goto_item'.
-          4. STIJL: Nederlands. Kort. Krachtig. Geen onnodig gepraat.`
+          DATA:
+          ${spreadsheetData}`
         }
       });
       sessionRef.current = await sessionPromise;
@@ -178,30 +177,29 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     }
   };
 
-  // Zorg voor een schoon nummer voor de tel: link
   const cleanPhone = currentContact?.phone.replace(/[^0-9+]/g, '') || '';
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-4 relative">
       
-      {/* Contact Informatie - Altijd zichtbaar */}
-      <div className="mb-12 text-center animate-in fade-in duration-700">
+      {/* Contact Naam - Altijd zichtbaar bovenaan */}
+      <div className="mb-12 text-center animate-in fade-in duration-500">
         <div className="inline-block px-4 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-full mb-6">
           <span className="text-blue-500 font-black text-[10px] tracking-[0.4em] uppercase">
-             Klant {currentIndex + 1} / {contacts.length}
+             TAAK {currentIndex + 1} / {contacts.length}
           </span>
         </div>
         
-        <h2 className={`text-5xl font-black text-white tracking-tighter uppercase mb-4 transition-all duration-500 ${awaitingClick ? 'text-green-400 scale-110' : ''}`}>
+        <h2 className={`text-5xl font-black text-white tracking-tighter uppercase mb-4 transition-colors duration-500 ${awaitingClick ? 'text-green-400' : ''}`}>
           {currentContact?.name}
         </h2>
         
-        <div className="space-y-3">
+        <div className="space-y-2">
           <p className="text-blue-400 text-sm font-black uppercase tracking-widest">
             {currentContact?.relation}
           </p>
-          <div className="max-w-[320px] mx-auto bg-white/5 p-6 rounded-[32px] border border-white/5">
-            <p className="text-white/60 text-xs font-medium leading-relaxed italic">
+          <div className="max-w-[320px] mx-auto py-4">
+            <p className="text-white/40 text-[11px] font-bold uppercase tracking-[0.2em] leading-relaxed">
               "{currentContact?.subject}"
             </p>
           </div>
@@ -209,25 +207,25 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       </div>
 
       {/* Interactie Knoppen */}
-      <div className="relative w-full max-w-xs flex flex-col items-center gap-6">
+      <div className="relative w-full max-w-xs flex flex-col items-center gap-8">
         
         {awaitingClick ? (
           <>
-            {/* DE FIX: Een pure <a> tag zonder JavaScript logic in de onClick voor iOS stabiliteit */}
+            {/* iOS STABIELE LINK: Toont het nummer voor herkenning door systeem-dialer */}
             <a 
               href={`tel:${cleanPhone}`}
               onClick={() => setCallInitiated(true)}
               className="w-full aspect-square sm:aspect-video rounded-[60px] bg-green-500 shadow-[0_0_60px_rgba(34,197,94,0.4)] text-black font-black text-4xl tracking-tighter flex flex-col items-center justify-center no-underline active:scale-95 transition-transform"
             >
-              <span className="mb-1 uppercase">BEL NU</span>
-              <span className="text-[10px] tracking-[0.2em] opacity-60 uppercase">Tik om dialer te openen</span>
+              <span className="mb-1 uppercase text-lg opacity-60">BEL</span>
+              <span className="text-3xl tracking-tight">{currentContact?.phone}</span>
             </a>
 
-            {/* Handmatige 'Volgende' knop na de bel-klik */}
+            {/* Handmatige Volgende knop verschijnt na aanraking */}
             {callInitiated && (
               <button 
                 onClick={handleManualNext}
-                className="w-full py-6 rounded-[40px] bg-blue-600 border border-blue-400/30 text-white font-black text-sm uppercase tracking-[0.3em] animate-in fade-in slide-in-from-bottom-4 duration-500"
+                className="w-full py-7 rounded-[40px] bg-blue-600 border border-blue-400/30 text-white font-black text-sm uppercase tracking-[0.4em] shadow-xl animate-in fade-in slide-in-from-bottom-6 duration-700"
               >
                 Volgende Persoon
               </button>
@@ -243,7 +241,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
                 : 'bg-blue-600 shadow-blue-900/40 text-white'
             } ${isConnecting ? 'opacity-50' : 'opacity-100'}`}
           >
-            {isConnecting ? '...' : isActive ? 'STOP' : 'START'}
+            {isConnecting ? '...' : isActive ? 'STOP' : 'LUISTEREN'}
           </button>
         )}
       </div>
@@ -259,7 +257,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             ></div>
           ))
         ) : (
-          <div className="h-[1px] w-32 bg-white/5 rounded-full"></div>
+          <div className="h-[2px] w-32 bg-white/10 rounded-full"></div>
         )}
       </div>
 
