@@ -61,10 +61,9 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     setCallInitiated(false);
   }, []);
 
-  // Cleanup enkel bij unmount van de hele app, niet bij index change
   useEffect(() => {
     return () => { cleanup(); };
-  }, []);
+  }, [cleanup]);
 
   const toggleSession = async () => {
     if (isActive || isConnecting) {
@@ -83,7 +82,10 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       audioInRef.current = inCtx;
       audioOutRef.current = outCtx;
 
-      const fullData = contacts.map((c, i) => `Taak ${i+1}: ${c.name} (${c.relation}) over: ${c.subject}`).join('\n');
+      // Bouw een compacte index voor de AI
+      const spreadsheetMap = contacts.map((c, i) => 
+        `Taak ${i + 1}: ${c.name} (${c.relation}) over: ${c.subject}`
+      ).join('\n');
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -116,18 +118,22 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               const source = audioOutRef.current.createBufferSource();
               source.buffer = buffer;
               source.connect(audioOutRef.current.destination);
-              const startTime = Math.max(nextStartTimeRef.current, audioOutRef.current.currentTime);
+              const now = audioOutRef.current.currentTime;
+              const startTime = Math.max(nextStartTimeRef.current, now);
               source.start(startTime);
               nextStartTimeRef.current = startTime + buffer.duration;
             }
 
             if (msg.toolCall?.functionCalls) {
               for (const fc of msg.toolCall.functionCalls) {
+                if (!fc.args) continue; // TS Guard
+                
                 if (fc.name === 'goto_item') {
                   const idx = (fc.args.index as number) - 1;
                   if (idx >= 0 && idx < contacts.length) {
                     setCurrentIndex(idx);
                     setAwaitingClick(false);
+                    setCallInitiated(false);
                   }
                 }
                 if (fc.name === 'prepare_dial') {
@@ -146,20 +152,25 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
           tools: [{ functionDeclarations: [
-            { name: 'goto_item', parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } },
-            { name: 'prepare_dial', parameters: { type: Type.OBJECT, properties: {} } }
+            { 
+              name: 'goto_item', 
+              description: 'Focus de app op een specifieke taak uit de lijst.',
+              parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER, description: 'Het taaknummer uit de spreadsheet (1-61)' } }, required: ['index'] } 
+            },
+            { name: 'prepare_dial', description: 'Activeer de bel-knop voor de huidige persoon.', parameters: { type: Type.OBJECT, properties: {} } }
           ]}] as any,
-          systemInstruction: `Je bent de stem van DriveDialer.
+          systemInstruction: `Je bent DriveDialer, een stem-assistent.
           
-          LIJST DATA:
-          ${fullData}
+          DATA MAP (Focus op taaknummers):
+          ${spreadsheetMap}
 
-          INSTRUCTIES:
-          1. Als de gebruiker vraagt om een taak (bijv. "nu taak 12"), gebruik 'goto_item' met de juiste index.
-          2. Zeg ALTIJD eerst: "[Naam], [Organisatie], [Onderwerp]". 
-          3. Wees kort van stof. Geen meta-taal.
-          4. Als de gebruiker wil bellen, gebruik 'prepare_dial'.
-          5. Belangrijk: De index in de lijst begint bij 1. De UI toont ook Taak X / Totaal.`
+          BELANGRIJK:
+          1. Als de gebruiker vraagt naar een taak (bijv "nu taak 4"):
+             - Gebruik DIRECT 'goto_item' met index 4.
+             - Zeg dan de info op in deze volgorde: "[Naam], [Organisatie]. Onderwerp: [Onderwerp]."
+          2. Zodra de info is opgelezen, wacht je op instructie of 'bel hem'.
+          3. Gebruik 'prepare_dial' alleen als de gebruiker wil bellen.
+          4. Wees extreem kort en zakelijk. Praat niet over knoppen of tools.`
         }
       });
       sessionRef.current = await sessionPromise;
@@ -172,19 +183,26 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   const cleanPhone = currentContact?.phone.replace(/[^0-9+]/g, '') || '';
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-4">
-      <div className="mb-10 text-center w-full">
-        <span className="text-blue-500 font-black text-[10px] tracking-[0.5em] uppercase block mb-4">
-          TAAK {currentIndex + 1} / {contacts.length}
-        </span>
-        <h2 className="text-5xl font-black text-white tracking-tighter uppercase mb-2">
+    <div className="flex-1 flex flex-col items-center justify-center p-4 relative">
+      
+      {/* Contact Header - Altijd gesynchroniseerd */}
+      <div className="mb-10 text-center w-full animate-in fade-in zoom-in-95 duration-500" key={currentIndex}>
+        <div className="inline-block px-4 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-full mb-6">
+          <span className="text-blue-500 font-black text-[10px] tracking-[0.5em] uppercase">
+             TAAK {currentIndex + 1} / {contacts.length}
+          </span>
+        </div>
+        
+        <h2 className="text-5xl font-black text-white tracking-tighter uppercase mb-2 break-words px-4">
           {currentContact?.name}
         </h2>
+        
         <p className="text-blue-400 font-bold uppercase tracking-widest text-sm mb-6">
           {currentContact?.relation}
         </p>
-        <div className="bg-white/5 p-6 rounded-[32px] border border-white/10 mx-auto max-w-sm">
-          <p className="text-white/60 text-xs font-bold uppercase tracking-widest leading-relaxed">
+
+        <div className="bg-white/5 p-8 rounded-[40px] border border-white/10 mx-auto max-w-sm shadow-inner">
+          <p className="text-white/50 text-[11px] font-bold uppercase tracking-[0.2em] leading-relaxed">
             "{currentContact?.subject}"
           </p>
         </div>
@@ -196,15 +214,16 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
             <a 
               href={`tel:${cleanPhone}`}
               onClick={() => setCallInitiated(true)}
-              className="w-full aspect-square sm:aspect-video rounded-[50px] bg-green-500 text-black font-black flex flex-col items-center justify-center no-underline shadow-[0_0_60px_rgba(34,197,94,0.4)] animate-in zoom-in-95"
+              className="w-full aspect-square sm:aspect-video rounded-[60px] bg-green-500 text-black font-black flex flex-col items-center justify-center no-underline shadow-[0_0_80px_rgba(34,197,94,0.5)] active:scale-95 transition-all animate-in zoom-in-90 duration-300"
             >
-              <span className="text-sm opacity-50 mb-1">BEL NU</span>
-              <span className="text-3xl tracking-tighter">{currentContact?.phone}</span>
+              <span className="text-xs opacity-40 mb-1 uppercase tracking-widest font-black">TIK OM TE BELLEN</span>
+              <span className="text-4xl tracking-tighter">{currentContact?.phone}</span>
             </a>
+            
             {callInitiated && (
               <button 
                 onClick={() => onCallComplete(currentContact.id)}
-                className="w-full py-6 rounded-[30px] bg-blue-600 font-black uppercase tracking-widest text-sm"
+                className="w-full py-7 rounded-[35px] bg-blue-600 text-white font-black uppercase tracking-[0.4em] text-[10px] shadow-2xl animate-in slide-in-from-bottom-4 duration-500"
               >
                 Volgende Taak
               </button>
@@ -213,20 +232,36 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         ) : (
           <button 
             onClick={toggleSession}
-            className={`w-full aspect-square sm:aspect-video rounded-[50px] font-black text-4xl shadow-2xl transition-all ${
-              isActive ? 'bg-red-600' : 'bg-blue-600'
-            }`}
+            disabled={isConnecting}
+            className={`w-full aspect-square sm:aspect-video rounded-[60px] font-black text-4xl tracking-tighter shadow-2xl transition-all duration-500 active:scale-90 ${
+              isActive ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'
+            } ${isConnecting ? 'opacity-30' : 'opacity-100'}`}
           >
             {isConnecting ? '...' : isActive ? 'STOP' : 'START'}
           </button>
         )}
       </div>
 
-      <div className="mt-10 h-10 flex items-center gap-1.5">
-        {isActive && !awaitingClick && [1,2,3,4,5].map(i => (
-          <div key={i} className="w-1.5 bg-blue-500 rounded-full animate-bounce h-full" style={{animationDelay: `${i*0.1}s`}}></div>
-        ))}
+      {/* Visualizer Footer */}
+      <div className="mt-12 h-10 flex items-center gap-1.5">
+        {isActive && !awaitingClick ? (
+          [0.4, 0.9, 0.5, 1.0, 0.7].map((h, i) => (
+            <div key={i} className="w-1.5 bg-blue-500 rounded-full animate-pulse-fast" style={{ height: `${h * 100}%`, animationDelay: `${i*0.1}s` }}></div>
+          ))
+        ) : (
+          <div className="h-[2px] w-40 bg-white/10 rounded-full"></div>
+        )}
       </div>
+
+      <style>{`
+        @keyframes pulse-fast {
+          0%, 100% { transform: scaleY(0.5); opacity: 0.5; }
+          50% { transform: scaleY(1.5); opacity: 1; }
+        }
+        .animate-pulse-fast {
+          animation: pulse-fast 0.5s ease-in-out infinite;
+        }
+      `}</style>
     </div>
   );
 };
