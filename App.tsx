@@ -12,7 +12,13 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const saved = localStorage.getItem('drivedialer_contacts');
-    if (saved) setContacts(JSON.parse(saved));
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      setContacts(parsed);
+      // Vind de eerste die nog niet gebeld is
+      const firstPending = parsed.findIndex((c: Contact) => c.status === 'pending');
+      if (firstPending !== -1) setCurrentIndex(firstPending);
+    }
   }, []);
 
   const handleDataUpdate = (newContacts: Contact[]) => {
@@ -26,6 +32,9 @@ const App: React.FC = () => {
     const updated = contacts.map(c => c.id === id ? { ...c, status: 'called' as const } : c);
     setContacts(updated);
     localStorage.setItem('drivedialer_contacts', JSON.stringify(updated));
+    
+    // We laten de VoiceController bepalen wanneer we naar de volgende gaan, 
+    // maar we zorgen hier voor de data-integriteit.
     if (currentIndex < contacts.length - 1) {
         setCurrentIndex(v => v + 1);
     }
@@ -43,31 +52,29 @@ const App: React.FC = () => {
           <ImportScreen onDataLoaded={handleDataUpdate} onBack={() => setCurrentSection(AppSection.DIALER)} />
         ) : contacts.length > 0 && currentIndex < contacts.length ? (
           <VoiceController 
+            key={currentIndex} // Re-mount controller bij index change voor schone sessies indien nodig
             contacts={contacts} 
             currentIndex={currentIndex}
             setCurrentIndex={setCurrentIndex}
             onCallComplete={markAsCalled}
           />
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-8">
-            <h2 className="text-xl font-bold uppercase text-white/20 tracking-widest">Lijst Leeg</h2>
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-12 animate-in fade-in duration-1000">
+            <div className="space-y-4">
+              <h2 className="text-sm font-black uppercase text-white/20 tracking-[0.5em]">Lijst Voltooid</h2>
+              <p className="text-blue-500/40 text-[10px] font-bold uppercase tracking-widest">Alle contacten zijn verwerkt</p>
+            </div>
             <button 
               onClick={() => setCurrentSection(AppSection.SETTINGS)}
-              className="bg-blue-600 px-8 py-4 rounded-2xl font-bold uppercase text-sm"
+              className="bg-blue-600/10 border border-blue-500/20 text-blue-500 px-10 py-5 rounded-full font-black uppercase text-[10px] tracking-[0.3em] hover:bg-blue-600 hover:text-white transition-all shadow-2xl shadow-blue-900/20"
             >
-              Importeer Contacten
+              Nieuwe Lijst
             </button>
           </div>
         )}
       </div>
 
-      {currentSection === AppSection.DIALER && contacts.length > 0 && (
-        <div className="pb-8 text-center">
-            <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.3em]">
-                Contact {currentIndex + 1} van {contacts.length}
-            </p>
-        </div>
-      )}
+      <div className="pb-8 h-4"></div>
     </div>
   );
 };

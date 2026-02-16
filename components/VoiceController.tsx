@@ -56,22 +56,32 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     setIsConnecting(false);
   }, []);
 
-  const handleDial = useCallback(() => {
-    if (!currentContact) return;
-    const phone = currentContact.phone.replace(/[^0-9+]/g, '');
-    const id = currentContact.id;
-    cleanup().then(() => {
-      window.location.href = `tel:${phone}`;
+  const handleDial = useCallback((index?: number) => {
+    // Als er een index wordt meegegeven (1-based), gebruik die, anders de huidige focus
+    const targetIdx = (typeof index === 'number' && index > 0) ? index - 1 : currentIndex;
+    const contact = contacts[targetIdx];
+    
+    if (!contact) return;
+    
+    const phone = contact.phone.replace(/[^0-9+]/g, '');
+    const id = contact.id;
+    
+    // Start de oproep direct via het protocol
+    window.location.href = `tel:${phone}`;
+    
+    // Geef de browser even de tijd om de dialer te openen voordat we de state updaten en de sessie sluiten
+    setTimeout(() => {
       onCallComplete(id);
-    });
-  }, [currentContact, cleanup, onCallComplete]);
+      cleanup();
+    }, 1000);
+  }, [currentIndex, contacts, cleanup, onCallComplete]);
 
-  const handleNext = useCallback(() => {
-    if (currentIndex < contacts.length - 1) {
-      setCurrentIndex(currentIndex + 1);
+  const handleGoto = useCallback((index: number) => {
+    const targetIdx = index - 1;
+    if (targetIdx >= 0 && targetIdx < contacts.length) {
+      setCurrentIndex(targetIdx);
     }
-    cleanup();
-  }, [currentIndex, contacts.length, setCurrentIndex, cleanup]);
+  }, [contacts.length, setCurrentIndex]);
 
   const toggleSession = async () => {
     if (isActive || isConnecting) {
@@ -89,6 +99,11 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       const outCtx = new AudioContext({ sampleRate: 24000 });
       audioInRef.current = inCtx;
       audioOutRef.current = outCtx;
+
+      // Bouw een zeer gedetailleerde context voor de AI zodat hij alles over elk contact weet
+      const detailedList = contacts.map((c, i) => 
+        `Taak ${i + 1}: Naam: ${c.name}, Organisatie: ${c.relation}, Onderwerp: ${c.subject}, Telefoon: ${c.phone}`
+      ).join('\n');
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -130,8 +145,10 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
             if (msg.toolCall?.functionCalls) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'dial') handleDial();
-                if (fc.name === 'skip') handleNext();
+                if (fc.name === 'dial') handleDial(fc.args?.index as number);
+                if (fc.name === 'goto') handleGoto(fc.args?.index as number);
+                if (fc.name === 'skip') handleGoto(currentIndex + 2);
+                
                 sessionRef.current?.sendToolResponse({
                     functionResponses: { id: fc.id, name: fc.name, response: { result: "ok" } }
                 });
@@ -145,13 +162,36 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
           tools: [{ functionDeclarations: [
-            { name: 'dial', description: 'Bel deze persoon.', parameters: { type: Type.OBJECT, properties: {} } },
-            { name: 'skip', description: 'Volgende persoon in de lijst.', parameters: { type: Type.OBJECT, properties: {} } }
+            { 
+              name: 'dial', 
+              description: 'Start het daadwerkelijke telefoongesprek.', 
+              parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER, description: 'Optioneel: het nummer op de lijst' } } } 
+            },
+            { 
+              name: 'goto', 
+              description: 'Verander de focus van het scherm naar een specifiek contactpersoon zonder te bellen.', 
+              parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER, description: 'Het nummer op de lijst (1-gebaseerd)' } }, required: ['index'] } 
+            },
+            { 
+              name: 'skip', 
+              description: 'Ga naar de volgende persoon op de lijst.', 
+              parameters: { type: Type.OBJECT, properties: {} } 
+            }
           ]}] as any,
-          systemInstruction: `Je bent een rij-assistent. 
-          Vraag alleen: "Zal ik ${currentContact?.name} bellen?"
-          Bij 'ja' -> gebruik dial. Bij 'nee' of 'volgende' -> gebruik skip. 
-          Wees extreem kort en zakelijk.`
+          systemInstruction: `Je bent een intelligente rij-assistent voor DriveDialer. Je hebt de VOLLEDIGE lijst met contacten en hun details in je geheugen:
+
+          LIJST:
+          ${detailedList}
+
+          HUIDIGE STATUS:
+          Je bent momenteel bij Taak #${currentIndex + 1}: ${currentContact?.name}.
+
+          RICHTLIJNEN VOOR CONVERSATIE:
+          1. Informatie geven: Als de gebruiker vraagt om details (bijv. "Bij welk bedrijf werkt hij?", "Wat is het onderwerp?", "Vertel meer over taak 5"), gebruik dan de data hierboven om een uitgebreid antwoord te geven. 
+          2. Actief voorlezen: Als de gebruiker vraagt om een taak voor te lezen, noem dan altijd de Naam, Organisatie/Relatie EN het onderwerp. Vraag daarna of ze willen bellen.
+          3. Bevestiging: Als de gebruiker "bellen", "graag bellen", "ja", of "doe maar" zegt, gebruik dan ALTIJD de 'dial' tool.
+          4. Navigatie: Als de gebruiker vraagt naar een specifiek nummer op de lijst, gebruik 'goto' om dat contact op het scherm te tonen en lees de info voor.
+          5. Toon: Wees zakelijk, behulpzaam en kort (voor de veiligheid in de auto). Spreek uitsluitend Nederlands.`
         }
       });
       sessionRef.current = await sessionPromise;
@@ -164,36 +204,69 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-4">
       
-      {/* Naam: Kleiner dan voorheen voor iPhone 17 */}
-      <div className="mb-16 text-center">
-        <h2 className="text-2xl font-bold text-white/90 tracking-tight">
-          {currentContact?.name || "Geen contacten"}
+      {/* Informatie Paneel */}
+      <div className="mb-20 text-center animate-in fade-in slide-in-from-bottom-4 duration-700">
+        <div className="inline-block px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full mb-4">
+          <span className="text-blue-500 font-black text-[10px] tracking-[0.3em] uppercase">
+             Lijst Item {currentIndex + 1} van {contacts.length}
+          </span>
+        </div>
+        <h2 className="text-3xl font-black text-white tracking-tighter uppercase mb-2">
+          {currentContact?.name || "Klaar"}
         </h2>
+        <p className="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em]">
+          {currentContact?.relation}
+        </p>
       </div>
 
-      {/* Startknop: Helderblauw veld */}
+      {/* Centrale Actieknop */}
       <button 
         onClick={toggleSession}
         disabled={isConnecting}
-        className={`w-full max-w-xs aspect-[4/3] rounded-[40px] font-black text-5xl tracking-[0.1em] transition-all shadow-2xl active:scale-95 flex items-center justify-center ${
+        className={`relative w-full max-w-xs aspect-video rounded-[45px] font-black text-5xl tracking-[0.1em] transition-all flex items-center justify-center overflow-hidden shadow-2xl active:scale-95 ${
           isActive 
             ? 'bg-red-600 shadow-red-900/40' 
             : 'bg-blue-600 shadow-blue-900/40'
-        } ${isConnecting ? 'opacity-50 animate-pulse' : 'opacity-100'}`}
+        } ${isConnecting ? 'opacity-50' : 'opacity-100'}`}
       >
-        {isConnecting ? '...' : isActive ? 'STOP' : 'START'}
+        {/* Subtiele gloed animatie bij activiteit */}
+        {isActive && (
+          <div className="absolute inset-0 bg-white/10 animate-pulse"></div>
+        )}
+        <span className="relative z-10">
+          {isConnecting ? '...' : isActive ? 'STOP' : 'START'}
+        </span>
       </button>
 
-      {/* Minimale status indicator */}
-      <div className="mt-12 h-4">
-        {isActive && (
-          <div className="flex gap-1">
-            <div className="w-1 h-4 bg-blue-500 animate-bounce"></div>
-            <div className="w-1 h-4 bg-blue-500 animate-bounce [animation-delay:0.2s]"></div>
-            <div className="w-1 h-4 bg-blue-500 animate-bounce [animation-delay:0.4s]"></div>
-          </div>
+      {/* Audio Visualizer (Minimalistisch) */}
+      <div className="mt-16 h-12 flex items-center justify-center gap-1.5 w-full max-w-[200px]">
+        {isActive ? (
+          <>
+            {[0.4, 0.7, 0.3, 0.9, 0.5, 0.8].map((h, i) => (
+              <div 
+                key={i}
+                className="w-1.5 bg-blue-500 rounded-full animate-wave" 
+                style={{ 
+                  height: `${h * 100}%`,
+                  animationDelay: `${i * 0.1}s`
+                }}
+              ></div>
+            ))}
+          </>
+        ) : (
+          <div className="w-full h-[1px] bg-white/10"></div>
         )}
       </div>
+
+      <style>{`
+        @keyframes wave {
+          0%, 100% { transform: scaleY(0.5); }
+          50% { transform: scaleY(1.2); }
+        }
+        .animate-wave {
+          animation: wave 1s ease-in-out infinite;
+        }
+      `}</style>
 
     </div>
   );
