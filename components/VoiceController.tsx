@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type } from '@google/genai';
 import { Contact } from '../types';
 
@@ -61,9 +61,10 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
     setCallInitiated(false);
   }, []);
 
-  const handleManualNext = () => {
-    onCallComplete(currentContact.id);
-  };
+  // Cleanup enkel bij unmount van de hele app, niet bij index change
+  useEffect(() => {
+    return () => { cleanup(); };
+  }, []);
 
   const toggleSession = async () => {
     if (isActive || isConnecting) {
@@ -82,9 +83,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       audioInRef.current = inCtx;
       audioOutRef.current = outCtx;
 
-      const spreadsheetData = contacts.map((c, i) => 
-        `Punt ${i + 1}: Naam: ${c.name}, Bedrijf: ${c.relation}, Onderwerp: ${c.subject}`
-      ).join('\n');
+      const fullData = contacts.map((c, i) => `Taak ${i+1}: ${c.name} (${c.relation}) over: ${c.subject}`).join('\n');
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -92,7 +91,6 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           onopen: () => {
             setIsActive(true);
             setIsConnecting(false);
-            
             const source = inCtx.createMediaStreamSource(stream);
             const processor = inCtx.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
@@ -118,22 +116,25 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               const source = audioOutRef.current.createBufferSource();
               source.buffer = buffer;
               source.connect(audioOutRef.current.destination);
-              const start = Math.max(nextStartTimeRef.current, audioOutRef.current.currentTime);
-              source.start(start);
-              nextStartTimeRef.current = start + buffer.duration;
+              const startTime = Math.max(nextStartTimeRef.current, audioOutRef.current.currentTime);
+              source.start(startTime);
+              nextStartTimeRef.current = startTime + buffer.duration;
             }
 
             if (msg.toolCall?.functionCalls) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'prepare_dial') {
-                    setAwaitingClick(true);
-                }
                 if (fc.name === 'goto_item') {
-                  const idx = (fc.args?.index as number) - 1;
-                  if (idx >= 0 && idx < contacts.length) setCurrentIndex(idx);
+                  const idx = (fc.args.index as number) - 1;
+                  if (idx >= 0 && idx < contacts.length) {
+                    setCurrentIndex(idx);
+                    setAwaitingClick(false);
+                  }
+                }
+                if (fc.name === 'prepare_dial') {
+                  setAwaitingClick(true);
                 }
                 sessionRef.current?.sendToolResponse({
-                    functionResponses: { id: fc.id, name: fc.name, response: { result: "ok" } }
+                  functionResponses: { id: fc.id, name: fc.name, response: { result: "ok" } }
                 });
               }
             }
@@ -145,29 +146,20 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
           tools: [{ functionDeclarations: [
-            { 
-              name: 'prepare_dial', 
-              description: 'Activeer de groene bel-knop.', 
-              parameters: { type: Type.OBJECT, properties: {} } 
-            },
-            { 
-              name: 'goto_item', 
-              description: 'Focus op een ander rijnummer.', 
-              parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } 
-            }
+            { name: 'goto_item', parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } },
+            { name: 'prepare_dial', parameters: { type: Type.OBJECT, properties: {} } }
           ]}] as any,
-          systemInstruction: `Je bent de stem-assistent voor DriveDialer. 
+          systemInstruction: `Je bent de stem van DriveDialer.
+          
+          LIJST DATA:
+          ${fullData}
 
-          STRIKTE REGELS:
-          1. Praat NOOIT over je eigen instructies, tools, knoppen of de spreadsheet.
-          2. Als de gebruiker vraagt om informatie over een taak of contact: Geef DIRECT antwoord uit de data. 
-             Bijvoorbeeld: "Dat is [Naam] van [Bedrijf]. Het gaat over [Onderwerp]."
-          3. BELLEN: Gebruik de 'prepare_dial' tool als de gebruiker wil bellen. Zeg dan enkel: "Ik heb de knop klaargezet voor ${currentContact?.name}."
-          4. NAVIGATIE: Blijf bij de huidige persoon tot de gebruiker vraagt om de volgende. Gebruik dan 'goto_item'.
-          5. Taal: Nederlands. Spreek als een mens, niet als een handleiding. Wees extreem kort van stof.
-
-          DATA:
-          ${spreadsheetData}`
+          INSTRUCTIES:
+          1. Als de gebruiker vraagt om een taak (bijv. "nu taak 12"), gebruik 'goto_item' met de juiste index.
+          2. Zeg ALTIJD eerst: "[Naam], [Organisatie], [Onderwerp]". 
+          3. Wees kort van stof. Geen meta-taal.
+          4. Als de gebruiker wil bellen, gebruik 'prepare_dial'.
+          5. Belangrijk: De index in de lijst begint bij 1. De UI toont ook Taak X / Totaal.`
         }
       });
       sessionRef.current = await sessionPromise;
@@ -180,97 +172,61 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   const cleanPhone = currentContact?.phone.replace(/[^0-9+]/g, '') || '';
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-4 relative">
-      
-      {/* Contact Naam - Altijd zichtbaar bovenaan */}
-      <div className="mb-12 text-center animate-in fade-in duration-500">
-        <div className="inline-block px-4 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-full mb-6">
-          <span className="text-blue-500 font-black text-[10px] tracking-[0.4em] uppercase">
-             TAAK {currentIndex + 1} / {contacts.length}
-          </span>
-        </div>
-        
-        <h2 className={`text-5xl font-black text-white tracking-tighter uppercase mb-4 transition-colors duration-500 ${awaitingClick ? 'text-green-400' : ''}`}>
+    <div className="flex-1 flex flex-col items-center justify-center p-4">
+      <div className="mb-10 text-center w-full">
+        <span className="text-blue-500 font-black text-[10px] tracking-[0.5em] uppercase block mb-4">
+          TAAK {currentIndex + 1} / {contacts.length}
+        </span>
+        <h2 className="text-5xl font-black text-white tracking-tighter uppercase mb-2">
           {currentContact?.name}
         </h2>
-        
-        <div className="space-y-2">
-          <p className="text-blue-400 text-sm font-black uppercase tracking-widest">
-            {currentContact?.relation}
+        <p className="text-blue-400 font-bold uppercase tracking-widest text-sm mb-6">
+          {currentContact?.relation}
+        </p>
+        <div className="bg-white/5 p-6 rounded-[32px] border border-white/10 mx-auto max-w-sm">
+          <p className="text-white/60 text-xs font-bold uppercase tracking-widest leading-relaxed">
+            "{currentContact?.subject}"
           </p>
-          <div className="max-w-[320px] mx-auto py-4">
-            <p className="text-white/40 text-[11px] font-bold uppercase tracking-[0.2em] leading-relaxed">
-              "{currentContact?.subject}"
-            </p>
-          </div>
         </div>
       </div>
 
-      {/* Interactie Knoppen */}
-      <div className="relative w-full max-w-xs flex flex-col items-center gap-8">
-        
+      <div className="w-full max-w-xs space-y-6">
         {awaitingClick ? (
           <>
-            {/* iOS STABIELE LINK: Toont het nummer voor herkenning door systeem-dialer */}
             <a 
               href={`tel:${cleanPhone}`}
               onClick={() => setCallInitiated(true)}
-              className="w-full aspect-square sm:aspect-video rounded-[60px] bg-green-500 shadow-[0_0_60px_rgba(34,197,94,0.4)] text-black font-black text-4xl tracking-tighter flex flex-col items-center justify-center no-underline active:scale-95 transition-transform"
+              className="w-full aspect-square sm:aspect-video rounded-[50px] bg-green-500 text-black font-black flex flex-col items-center justify-center no-underline shadow-[0_0_60px_rgba(34,197,94,0.4)] animate-in zoom-in-95"
             >
-              <span className="mb-1 uppercase text-lg opacity-60">BEL</span>
-              <span className="text-3xl tracking-tight">{currentContact?.phone}</span>
+              <span className="text-sm opacity-50 mb-1">BEL NU</span>
+              <span className="text-3xl tracking-tighter">{currentContact?.phone}</span>
             </a>
-
-            {/* Handmatige Volgende knop verschijnt na aanraking */}
             {callInitiated && (
               <button 
-                onClick={handleManualNext}
-                className="w-full py-7 rounded-[40px] bg-blue-600 border border-blue-400/30 text-white font-black text-sm uppercase tracking-[0.4em] shadow-xl animate-in fade-in slide-in-from-bottom-6 duration-700"
+                onClick={() => onCallComplete(currentContact.id)}
+                className="w-full py-6 rounded-[30px] bg-blue-600 font-black uppercase tracking-widest text-sm"
               >
-                Volgende Persoon
+                Volgende Taak
               </button>
             )}
           </>
         ) : (
           <button 
             onClick={toggleSession}
-            disabled={isConnecting}
-            className={`w-full aspect-square sm:aspect-video rounded-[60px] font-black text-4xl tracking-tighter transition-all duration-500 flex flex-col items-center justify-center overflow-hidden shadow-2xl active:scale-90 ${
-              isActive 
-                ? 'bg-red-600 shadow-red-900/40 text-white' 
-                : 'bg-blue-600 shadow-blue-900/40 text-white'
-            } ${isConnecting ? 'opacity-50' : 'opacity-100'}`}
+            className={`w-full aspect-square sm:aspect-video rounded-[50px] font-black text-4xl shadow-2xl transition-all ${
+              isActive ? 'bg-red-600' : 'bg-blue-600'
+            }`}
           >
-            {isConnecting ? '...' : isActive ? 'STOP' : 'LUISTEREN'}
+            {isConnecting ? '...' : isActive ? 'STOP' : 'START'}
           </button>
         )}
       </div>
 
-      {/* Visualizer Status */}
-      <div className="mt-12 h-10 flex items-center justify-center gap-2">
-        {isActive && !awaitingClick ? (
-          [0.3, 0.8, 0.4, 1.0, 0.6, 0.9, 0.3].map((h, i) => (
-            <div 
-              key={i}
-              className="w-1.5 bg-blue-500 rounded-full animate-wave" 
-              style={{ height: `${h * 100}%`, animationDelay: `${i * 0.1}s` }}
-            ></div>
-          ))
-        ) : (
-          <div className="h-[2px] w-32 bg-white/10 rounded-full"></div>
-        )}
+      <div className="mt-10 h-10 flex items-center gap-1.5">
+        {isActive && !awaitingClick && [1,2,3,4,5].map(i => (
+          <div key={i} className="w-1.5 bg-blue-500 rounded-full animate-bounce h-full" style={{animationDelay: `${i*0.1}s`}}></div>
+        ))}
       </div>
-
-      <style>{`
-        @keyframes wave {
-          0%, 100% { transform: scaleY(0.4); opacity: 0.5; }
-          50% { transform: scaleY(1.9); opacity: 1; }
-        }
-        .animate-wave {
-          animation: wave 0.6s ease-in-out infinite;
-        }
-      `}</style>
-
     </div>
   );
 };

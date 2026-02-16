@@ -17,53 +17,55 @@ const ImportScreen: React.FC<ImportScreenProps> = ({ onDataLoaded, onBack }) => 
     if (savedUrl) setUrl(savedUrl);
   }, []);
 
-  const parseCSVLine = (text: string) => {
-    const result = [];
-    let cur = '';
-    let inQuote = false;
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      if (char === '"') inQuote = !inQuote;
-      else if (char === ',' && !inQuote) {
-        result.push(cur.trim());
-        cur = '';
-      } else cur += char;
-    }
-    result.push(cur.trim());
-    return result;
+  const parseCSV = (text: string) => {
+    const rows: string[][] = [];
+    const lines = text.split(/\r?\n/);
+    lines.forEach(line => {
+      if (!line.trim()) return;
+      const row: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      const sep = line.includes(';') ? ';' : ',';
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') inQuotes = !inQuotes;
+        else if (char === sep && !inQuotes) {
+          row.push(current.trim().replace(/^"|"$/g, ''));
+          current = '';
+        } else current += char;
+      }
+      row.push(current.trim().replace(/^"|"$/g, ''));
+      rows.push(row);
+    });
+    return rows;
   };
 
   const handleImport = async () => {
-    if (!url.includes('docs.google.com/spreadsheets')) {
-      setError('Plak de CSV link.');
-      return;
-    }
     setIsSyncing(true);
     setError(null);
     try {
       let fetchUrl = url;
-      if (!fetchUrl.includes('output=csv')) {
-        fetchUrl += (fetchUrl.includes('?') ? '&' : '?') + 'output=csv';
-      }
+      if (fetchUrl.includes('/edit')) fetchUrl = fetchUrl.replace(/\/edit.*$/, '/export?format=csv');
+      else if (!fetchUrl.includes('format=csv')) fetchUrl += (fetchUrl.includes('?') ? '&' : '?') + 'format=csv';
+
       const response = await fetch(fetchUrl);
-      if (!response.ok) throw new Error('Kon sheet niet ophalen.');
       const text = await response.text();
-      const rows = text.split(/\r?\n/).filter(row => row.trim() !== '');
-      const dataRows = rows.slice(1);
-      const parsedContacts: Contact[] = dataRows.map((row, index) => {
-        const cols = parseCSVLine(row);
-        return {
-          id: cols[0] || `id-${index}`,
-          name: cols[1] || 'Onbekend',
-          relation: cols[2] || '',
-          subject: cols[3] || '',
-          phone: cols[4] || '',
-          status: 'pending' as const
-        };
-      }).filter(c => c.phone !== '');
-      if (parsedContacts.length === 0) throw new Error('Geen geldige nummers.');
+      const allRows = parseCSV(text);
+      
+      const dataRows = allRows.slice(1); // Skip header
+      const parsed = dataRows.map((cols, i) => ({
+        id: cols[0] || `row-${i+1}`,
+        name: cols[1] || 'Onbekend',
+        relation: cols[2] || '',
+        subject: cols[3] || '',
+        phone: cols[4] || '',
+        status: 'pending' as const
+      })).filter(c => c.name !== 'Onbekend');
+
+      if (parsed.length === 0) throw new Error('Geen data gevonden.');
+      
       localStorage.setItem('drivedialer_sheet_url', url);
-      onDataLoaded(parsedContacts);
+      onDataLoaded(parsed);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -72,35 +74,20 @@ const ImportScreen: React.FC<ImportScreenProps> = ({ onDataLoaded, onBack }) => 
   };
 
   return (
-    <div className="flex-1 flex flex-col space-y-8 animate-in fade-in duration-500">
-      <div className="px-2">
-        <h2 className="text-xl font-bold text-white mb-1 uppercase tracking-tight">Instellingen</h2>
-        <p className="text-[10px] text-white/30 font-bold uppercase tracking-widest">Importeer je Google Sheet</p>
-      </div>
-
-      <div className="space-y-6">
-        <input 
-          type="text" 
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Google Sheet CSV URL..."
-          className="w-full bg-white/5 border border-white/10 rounded-3xl px-6 py-5 text-sm text-blue-400 focus:outline-none focus:border-blue-500 transition-all font-mono"
-        />
-
-        {error && <div className="text-red-500 text-[10px] font-bold uppercase text-center px-4 tracking-tighter">⚠️ {error}</div>}
-
-        <button 
-          onClick={handleImport}
-          disabled={isSyncing || !url}
-          className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase tracking-widest text-white shadow-xl shadow-blue-600/20 active:scale-95 transition-transform"
-        >
-          {isSyncing ? 'Bezig...' : 'Lijst Laden'}
-        </button>
-
-        <button onClick={onBack} className="w-full py-4 text-[10px] font-bold text-white/20 uppercase tracking-[0.3em]">
-          Terug naar Dialer
-        </button>
-      </div>
+    <div className="flex-1 flex flex-col space-y-8 p-4">
+      <h2 className="text-xl font-black uppercase tracking-tighter">Sync Spreadsheet</h2>
+      <input 
+        type="text" 
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="Google Sheets URL..."
+        className="w-full bg-white/10 p-6 rounded-3xl text-blue-400"
+      />
+      {error && <p className="text-red-500 text-xs font-bold">{error}</p>}
+      <button onClick={handleImport} className="bg-blue-600 p-6 rounded-3xl font-black uppercase">
+        {isSyncing ? 'Synchroniseren...' : 'Update Lijst'}
+      </button>
+      <button onClick={onBack} className="text-white/40 uppercase text-[10px] font-bold">Terug</button>
     </div>
   );
 };

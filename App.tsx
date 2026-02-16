@@ -15,7 +15,6 @@ const App: React.FC = () => {
     if (saved) {
       const parsed = JSON.parse(saved);
       setContacts(parsed);
-      // Vind de eerste die nog niet gebeld is
       const firstPending = parsed.findIndex((c: Contact) => c.status === 'pending');
       if (firstPending !== -1) setCurrentIndex(firstPending);
     }
@@ -32,9 +31,6 @@ const App: React.FC = () => {
     const updated = contacts.map(c => c.id === id ? { ...c, status: 'called' as const } : c);
     setContacts(updated);
     localStorage.setItem('drivedialer_contacts', JSON.stringify(updated));
-    
-    // We laten de VoiceController bepalen wanneer we naar de volgende gaan, 
-    // maar we zorgen hier voor de data-integriteit.
     if (currentIndex < contacts.length - 1) {
         setCurrentIndex(v => v + 1);
     }
@@ -50,31 +46,25 @@ const App: React.FC = () => {
       <div className="flex-1 flex flex-col mt-4">
         {currentSection === AppSection.SETTINGS ? (
           <ImportScreen onDataLoaded={handleDataUpdate} onBack={() => setCurrentSection(AppSection.DIALER)} />
-        ) : contacts.length > 0 && currentIndex < contacts.length ? (
+        ) : contacts.length > 0 ? (
           <VoiceController 
-            key={currentIndex} // Re-mount controller bij index change voor schone sessies indien nodig
             contacts={contacts} 
             currentIndex={currentIndex}
             setCurrentIndex={setCurrentIndex}
             onCallComplete={markAsCalled}
           />
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-12 animate-in fade-in duration-1000">
-            <div className="space-y-4">
-              <h2 className="text-sm font-black uppercase text-white/20 tracking-[0.5em]">Lijst Voltooid</h2>
-              <p className="text-blue-500/40 text-[10px] font-bold uppercase tracking-widest">Alle contacten zijn verwerkt</p>
-            </div>
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-12">
+            <h2 className="text-sm font-black uppercase text-white/20 tracking-[0.5em]">Geen Lijst</h2>
             <button 
               onClick={() => setCurrentSection(AppSection.SETTINGS)}
-              className="bg-blue-600/10 border border-blue-500/20 text-blue-500 px-10 py-5 rounded-full font-black uppercase text-[10px] tracking-[0.3em] hover:bg-blue-600 hover:text-white transition-all shadow-2xl shadow-blue-900/20"
+              className="bg-blue-600 px-10 py-5 rounded-full font-black uppercase text-[10px] tracking-[0.3em]"
             >
-              Nieuwe Lijst
+              Importeer Spreadsheet
             </button>
           </div>
         )}
       </div>
-
-      <div className="pb-8 h-4"></div>
     </div>
   );
 };
