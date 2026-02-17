@@ -10,14 +10,13 @@ interface VoiceControllerProps {
   onCallComplete: (id: string) => void;
 }
 
-// Manual base64 encoding as per @google/genai guidelines
+// Handmatige base64 hulpfuncties conform richtlijnen
 const encode = (bytes: Uint8Array) => {
   let b = '';
   for (let i = 0; i < bytes.byteLength; i++) b += String.fromCharCode(bytes[i]);
   return btoa(b);
 };
 
-// Manual base64 decoding as per @google/genai guidelines
 const decode = (base64: string) => {
   const s = atob(base64);
   const b = new Uint8Array(s.length);
@@ -37,7 +36,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   const streamRef = useRef<MediaStream | null>(null);
   const nextStartTimeRef = useRef<number>(0);
 
-  const cleanup = useCallback(async () => {
+  // De cruciale 'Hard Reset' functie om hardware vrij te geven
+  const hardReset = useCallback(async () => {
     if (sessionRef.current) {
       try { sessionRef.current.close(); } catch (e) {}
       sessionRef.current = null;
@@ -60,12 +60,12 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
   }, []);
 
   useEffect(() => {
-    return () => { cleanup(); };
-  }, [cleanup]);
+    return () => { hardReset(); };
+  }, [hardReset]);
 
-  const toggleSession = async () => {
+  const startAssistant = async () => {
     if (isActive || isConnecting) {
-      await cleanup();
+      await hardReset();
       return;
     }
 
@@ -82,14 +82,9 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
       audioInRef.current = inCtx;
       audioOutRef.current = outCtx;
 
-      // Bouw een zeer expliciete lijst voor de AI om verwarring te voorkomen
-      const contextPrompt = contacts.map((c, i) => 
-        `IDENTIFICATIE: Taak ${i + 1}
-         PERSOON: ${c.name}
-         BEDRIJF: ${c.relation}
-         REDEN_VOOR_GESPREK: ${c.subject}
-         TELEFOONNUMMER: ${c.phone}`
-      ).join('\n---\n');
+      const contextData = contacts.map((c, i) => 
+        `Index ${i + 1}: ${c.name} (${c.relation}). Onderwerp: ${c.subject}. Telefoon: ${c.phone}`
+      ).join('\n');
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -97,18 +92,17 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           onopen: () => {
             setIsActive(true);
             setIsConnecting(false);
+            
             const source = inCtx.createMediaStreamSource(stream);
             const processor = inCtx.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
-              // CRITICAL: Solely rely on sessionPromise resolves and then call `session.sendRealtimeInput`
               const input = e.inputBuffer.getChannelData(0);
               const pcm = new Int16Array(input.length);
               for (let i = 0; i < input.length; i++) pcm[i] = input[i] * 32768;
-              const encodedData = encode(new Uint8Array(pcm.buffer));
-              sessionPromise.then((session) => {
-                session.sendRealtimeInput({
-                  media: { data: encodedData, mimeType: 'audio/pcm;rate=16000' }
-                });
+              const data = encode(new Uint8Array(pcm.buffer));
+              
+              sessionPromise.then(session => {
+                session.sendRealtimeInput({ media: { data, mimeType: 'audio/pcm;rate=16000' } });
               });
             };
             source.connect(processor);
@@ -122,6 +116,7 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               const buffer = audioOutRef.current.createBuffer(1, int16.length, 24000);
               const channel = buffer.getChannelData(0);
               for (let i = 0; i < int16.length; i++) channel[i] = int16[i] / 32768.0;
+              
               const source = audioOutRef.current.createBufferSource();
               source.buffer = buffer;
               source.connect(audioOutRef.current.destination);
@@ -132,21 +127,16 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
 
             if (msg.toolCall?.functionCalls) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (!fc.args) continue; 
-                
-                if (fc.name === 'goto_item') {
+                if (fc.name === 'goto_item' && fc.args?.index) {
                   const idx = (fc.args.index as number) - 1;
-                  if (idx >= 0 && idx < contacts.length) {
-                    setCurrentIndex(idx);
-                  }
+                  if (idx >= 0 && idx < contacts.length) setCurrentIndex(idx);
                 }
                 if (fc.name === 'trigger_call') {
-                  // STOP DIRECT OM MIC VRIJ TE GEVEN VOOR TELEFOON
-                  await cleanup();
+                  // Direct stoppen voor mic-vrijgave
+                  await hardReset();
                   setAwaitingDial(true);
                 }
-                // Use sessionPromise.then for tool responses as per guidelines
-                sessionPromise.then((session) => {
+                sessionPromise.then(session => {
                   session.sendToolResponse({
                     functionResponses: { id: fc.id, name: fc.name, response: { result: "ok" } }
                   });
@@ -154,11 +144,8 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
               }
             }
           },
-          onerror: (e) => {
-            console.error("Session Error:", e);
-            cleanup();
-          },
-          onclose: () => cleanup()
+          onerror: () => hardReset(),
+          onclose: () => hardReset()
         },
         config: {
           responseModalities: [Modality.AUDIO],
@@ -166,44 +153,40 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
           tools: [{ functionDeclarations: [
             { 
               name: 'goto_item', 
-              description: 'Focus de app op een specifiek taaknummer.',
+              description: 'Toon een andere taak.',
               parameters: { type: Type.OBJECT, properties: { index: { type: Type.NUMBER } }, required: ['index'] } 
             },
             { 
               name: 'trigger_call', 
-              description: 'Start het belproces en geef de microfoon vrij.',
+              description: 'Start het bellen.',
               parameters: { type: Type.OBJECT, properties: {} } 
             }
           ]}] as any,
-          systemInstruction: `Je bent de DriveDialer Assistent. 
+          systemInstruction: `Je bent DriveDialer. 
+          DATABASE:
+          ${contextData}
           
-          JE DATABASE MET TAKEN:
-          ${contextPrompt}
-
-          STRIKTE WERKWIJZE:
-          1. Als de gebruiker vraagt naar een taak of contact:
-             - Gebruik 'goto_item' met het juiste indexnummer.
-             - Zeg daarna DIRECT: "[NAAM] van [BEDRIJF]. De reden voor dit gesprek is: [REDEN_VOOR_GESPREK]."
-          2. Zeg NOOIT telefoonnummers.
-          3. Gebruik 'trigger_call' enkel als de gebruiker zegt "bel hem", "bel haar" of "bel dit nummer".
-          4. Wees extreem kortaf. Geen beleefdheden.`
+          STRIKTE REGELS:
+          1. Als de gebruiker vraagt om iemand te bellen, gebruik trigger_call.
+          2. Als je naar iemand anders gaat, gebruik goto_item en zeg daarna: "[Naam] van [Bedrijf]. Onderwerp is [Onderwerp]."
+          3. Wees extreem kort en zakelijk. Geen beleefdheidsvormen.`
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (e) {
-      console.error("Initialisatie fout:", e);
-      await cleanup();
+      console.error(e);
+      await hardReset();
     }
   };
 
   const cleanPhone = currentContact?.phone.replace(/[^0-9+]/g, '') || '';
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
+    <div className="flex-1 flex flex-col items-center justify-center p-6 relative select-none">
       
-      {/* Driving Focus UI: Alleen de Naam */}
+      {/* DRIVE MODE UI: Alleen de Naam */}
       <div className="mb-24 text-center w-full animate-in fade-in zoom-in-95 duration-700" key={currentIndex}>
-        <h2 className="text-7xl sm:text-9xl font-black text-white tracking-tighter uppercase leading-none break-words">
+        <h2 className="text-7xl sm:text-9xl font-black text-white tracking-tighter uppercase leading-[0.9] break-words">
           {currentContact?.name}
         </h2>
       </div>
@@ -217,41 +200,40 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
                 onCallComplete(currentContact.id);
                 setAwaitingDial(false);
               }}
-              className="w-full h-64 rounded-[100px] bg-green-500 text-black font-black flex flex-col items-center justify-center no-underline shadow-[0_0_150px_rgba(34,197,94,0.3)] active:scale-95 transition-all"
+              className="w-full h-72 rounded-[120px] bg-green-500 text-black font-black flex flex-col items-center justify-center no-underline shadow-[0_0_150px_rgba(34,197,94,0.4)] active:scale-95 transition-all border-8 border-green-400"
             >
-              <span className="text-9xl mb-4">📞</span>
+              <span className="text-9xl mb-2">📞</span>
               <span className="text-xs uppercase tracking-[0.5em] font-black opacity-60">BEL {currentContact?.name}</span>
             </a>
             <button 
               onClick={() => setAwaitingDial(false)} 
-              className="w-full py-4 text-white/20 text-[10px] uppercase font-black tracking-[0.4em]"
+              className="w-full py-6 text-white/20 text-[10px] uppercase font-black tracking-[0.4em]"
             >
               Annuleren
             </button>
           </div>
         ) : (
           <button 
-            onClick={toggleSession}
+            onClick={startAssistant}
             disabled={isConnecting}
-            className={`w-full h-64 rounded-[100px] font-black text-6xl tracking-tighter shadow-2xl transition-all duration-500 active:scale-90 border-4 ${
+            className={`w-full h-72 rounded-[120px] font-black text-7xl tracking-tighter shadow-2xl transition-all duration-500 active:scale-90 border-[12px] ${
               isActive 
                 ? 'bg-red-600 border-red-500 text-white animate-pulse' 
                 : 'bg-blue-600 border-blue-500 text-white'
-            } ${isConnecting ? 'opacity-20' : 'opacity-100'}`}
+            } ${isConnecting ? 'opacity-10' : 'opacity-100'}`}
           >
             {isConnecting ? '...' : isActive ? 'STOP' : 'START'}
           </button>
         )}
       </div>
 
-      {/* Mic Animatie onderaan */}
+      {/* Visualizer onderaan */}
       <div className="absolute bottom-16 left-0 right-0 flex justify-center items-center gap-3 h-12 pointer-events-none">
         {isActive && !awaitingDial ? (
-          [0.3, 0.6, 1.0, 0.5, 0.8].map((h, i) => (
+          [0.3, 0.7, 1.0, 0.6, 0.9].map((h, i) => (
             <div 
               key={i} 
               className="w-3 bg-blue-500 rounded-full animate-wave" 
-              // Fix: Added space before 's' unit for correct interpretation of variable in template literal
               style={{ height: `${h * 100}%`, animationDelay: `${i * 0.1}s` }}
             ></div>
           ))
@@ -260,11 +242,10 @@ const VoiceController: React.FC<VoiceControllerProps> = ({ contacts, currentInde
         )}
       </div>
 
-      {/* Fix: Using dangerouslySetInnerHTML for raw CSS to prevent JSX/TS parsing errors of the string content */}
       <style dangerouslySetInnerHTML={{ __html: `
         @keyframes wave {
           0%, 100% { transform: scaleY(0.4); opacity: 0.1; }
-          50% { transform: scaleY(1.6); opacity: 1; }
+          50% { transform: scaleY(1.8); opacity: 1; }
         }
         .animate-wave { animation: wave 0.4s ease-in-out infinite; }
       ` }} />
